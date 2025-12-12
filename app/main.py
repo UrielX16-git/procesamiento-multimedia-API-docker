@@ -4,7 +4,7 @@ Arquitectura de "conmutador ligero" que procesa bajo demanda.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import video, audio
+from .routers import video, audio, imagen
 import os
 
 # Crear directorio temporal si no existe
@@ -32,6 +32,7 @@ app.add_middleware(
 # Registrar routers
 app.include_router(video.router)
 app.include_router(audio.router)
+app.include_router(imagen.router)
 
 
 @app.get("/")
@@ -50,6 +51,13 @@ async def root():
             "audio": {
                 "/audio/cortar": "Recortar audio entre timestamps",
                 "/audio/unir": "Unir múltiples archivos de audio"
+            },
+            "imagen": {
+                "/imagen/captura": "Capturar frame de video en tiempo específico"
+            },
+            "utilidades": {
+                "/reset": "Limpiar archivos temporales manualmente",
+                "/health": "Estado de salud de la API"
             }
         },
         "docs": "/docs",

@@ -135,3 +135,28 @@ def concat_audios(input_paths: List[str], output_path: str) -> None:
     finally:
         if os.path.exists(list_file_path):
             os.remove(list_file_path)
+
+
+def capture_frame(input_path: str, output_path: str, timestamp: str, quality: int = 85) -> None:
+    """
+    Captura un frame de un video en un tiempo específico en formato WebP optimizado.
+    
+    Args:
+        input_path: Ruta al archivo de video
+        output_path: Ruta donde guardar la imagen
+        timestamp: Tiempo en formato HH:MM:SS
+        quality: Calidad de compresión WebP (0-100, default: 85)
+    """
+    cmd = [
+        "ffmpeg",
+        "-ss", timestamp,
+        "-i", input_path,
+        "-frames:v", "1",
+        "-c:v", "libwebp",
+        "-quality", str(quality),
+        "-compression_level", "6",
+        "-y",
+        output_path
+    ]
+    
+    subprocess.run(cmd, check=True, capture_output=True)

@@ -9,6 +9,7 @@ API REST modular y escalable para procesamiento de archivos multimedia usando **
 - ✅ **Comprimir videos** reduciendo tamaño sin perder mucha calidad
 - ✅ **Cortar audios** entre timestamps específicos
 - ✅ **Unir múltiples audios** en un solo archivo
+- ✅ **Capturar frames** de videos en timestamps específicos
 
 ## 🏗️ Arquitectura
 
@@ -20,7 +21,8 @@ procesamiento-multimedia-API-docker/
 │   ├── main.py              # Punto de entrada FastAPI
 │   ├── routers/
 │   │   ├── video.py         # Endpoints de video
-│   │   └── audio.py         # Endpoints de audio
+│   │   ├── audio.py         # Endpoints de audio
+│   │   └── imagen.py        # Endpoints de imagen
 │   └── services/
 │       └── ffmpeg_svc.py    # Lógica FFmpeg
 ├── Dockerfile
@@ -39,13 +41,10 @@ procesamiento-multimedia-API-docker/
 
 ```bash
 # Clonar el repositorio
-git clone <url-del-repo>
+git clone https://github.com/UrielX16-git/procesamiento-multimedia-API-docker.git
 cd procesamiento-multimedia-API-docker
 
 # Construir y ejecutar
-docker-compose up --build
-
-# O en segundo plano
 docker-compose up -d --build
 ```
 
@@ -107,21 +106,15 @@ curl -X POST \
   -o merged_audio.mp3
 ```
 
-## 🧑‍💻 Desarrollo Local (sin Docker)
+### 6. Capturar Frame de Video
 
 ```bash
-# Crear entorno virtual
-python -m venv venv
-source venv/bin/activate  # En Windows: venv\Scripts\activate
-
-# Instalar dependencias
-pip install -r requirements.txt
-
-# Asegurarse de tener FFmpeg instalado en el sistema
-ffmpeg -version
-
-# Ejecutar servidor de desarrollo
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+curl -X POST \
+  -F "file=@video.mp4" \
+  -F "tiempo=00:01:30" \
+  -F "calidad=70" \
+  http://localhost:8000/imagen/captura \
+  -o frame.webp
 ```
 
 ## 🔧 Configuración
@@ -151,22 +144,3 @@ Edita `app/services/ffmpeg_svc.py` para ajustar parámetros:
 ## 📦 Limpieza Automática
 
 Los archivos temporales se eliminan automáticamente después de cada operación usando `BackgroundTasks` de FastAPI.
-
-## 🚧 Mejoras Futuras
-
-- [ ] Procesamiento asíncrono con Redis/Celery para archivos grandes
-- [ ] Sistema de cola con IDs de trabajo
-- [ ] Límite de tamaño de archivo
-- [ ] Autenticación con JWT
-- [ ] Rate limiting
-- [ ] Métricas y logging estructurado
-- [ ] Soporte para más formatos de salida
-- [ ] WebSockets para progreso en tiempo real
-
-## 📝 Licencia
-
-MIT
-
-## 🤝 Contribuciones
-
-¡Las contribuciones son bienvenidas! Por favor abre un issue o pull request.
