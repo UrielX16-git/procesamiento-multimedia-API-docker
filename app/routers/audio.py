@@ -7,9 +7,11 @@ from typing import List
 import shutil
 import os
 import uuid
+import logging
 from ..services import ffmpeg_svc
 
 router = APIRouter(prefix="/audio", tags=["Audio"])
+logger = logging.getLogger(__name__)
 
 TEMP_DIR = "/tmp_media"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -54,6 +56,7 @@ async def cut_audio(
     Returns:
         Archivo de audio recortado
     """
+    logger.info(f"[ENDPOINT] POST /audio/cortar - Recibida solicitud, archivo: {file.filename}, inicio: {inicio}, fin: {fin}")
     input_path = save_upload(file)
     output_filename = f"cut_{uuid.uuid4()}.mp3"
     output_path = os.path.join(TEMP_DIR, output_filename)
@@ -71,6 +74,7 @@ async def cut_audio(
             filename=f"cut_{file.filename}"
         )
     except Exception as e:
+        logger.error(f"[ENDPOINT] Error al cortar audio: {str(e)}")
         background_tasks.add_task(cleanup_file, input_path)
         background_tasks.add_task(cleanup_file, output_path)
         return JSONResponse(
@@ -93,7 +97,9 @@ async def join_audios(
     Returns:
         Archivo de audio con todos los archivos concatenados
     """
+    logger.info(f"[ENDPOINT] POST /audio/unir - Recibida solicitud, numero de archivos: {len(files)}")
     if len(files) < 2:
+        logger.warning(f"[ENDPOINT] Se requieren minimo 2 archivos, recibidos: {len(files)}")
         return JSONResponse(
             status_code=400,
             content={"error": "Se requieren al menos 2 archivos para unir"}
@@ -105,7 +111,8 @@ async def join_audios(
     
     try:
         # Guardar todos los archivos subidos
-        for file in files:
+        for i, file in enumerate(files, 1):
+            logger.info(f"[ENDPOINT] Guardando archivo {i}/{len(files)}: {file.filename}")
             input_paths.append(save_upload(file))
         
         # Concatenar audios
@@ -121,6 +128,7 @@ async def join_audios(
             filename="merged_audio.mp3"
         )
     except Exception as e:
+        logger.error(f"[ENDPOINT] Error al unir audios: {str(e)}")
         background_tasks.add_task(cleanup_files, input_paths)
         background_tasks.add_task(cleanup_file, output_path)
         return JSONResponse(

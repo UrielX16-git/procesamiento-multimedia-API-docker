@@ -6,10 +6,25 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import video, audio, imagen
 import os
+import logging
+
+# Configurar logging para que se vea en Docker
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+logger = logging.getLogger(__name__)
 
 # Crear directorio temporal si no existe
 TEMP_DIR = "/tmp_media"
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+logger.info("=" * 60)
+logger.info("Iniciando API de Procesamiento Multimedia")
+logger.info(f"Directorio temporal: {TEMP_DIR}")
+logger.info("=" * 60)
 
 # Inicializar FastAPI
 app = FastAPI(
@@ -38,6 +53,7 @@ app.include_router(imagen.router)
 @app.get("/")
 async def root():
     """Endpoint raíz con información de la API."""
+    logger.info("Solicitud recibida en endpoint raiz /")
     return {
         "message": "API de Procesamiento Multimedia",
         "version": "1.0.0",
@@ -46,7 +62,8 @@ async def root():
             "video": {
                 "/video/detalles": "Extraer metadatos de video",
                 "/video/extraer-audio": "Extraer audio de video a MP3",
-                "/video/comprimir": "Comprimir video"
+                "/video/comprimir": "Comprimir video",
+                "/video/convertir-mp4": "Convertir video a MP4"
             },
             "audio": {
                 "/audio/cortar": "Recortar audio entre timestamps",
@@ -68,6 +85,7 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Endpoint de salud para monitoreo."""
+    logger.debug("Health check solicitado")
     return {"status": "healthy"}
 
 

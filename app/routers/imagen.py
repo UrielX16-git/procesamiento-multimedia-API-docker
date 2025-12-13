@@ -6,9 +6,11 @@ from fastapi.responses import FileResponse, JSONResponse
 import shutil
 import os
 import uuid
+import logging
 from ..services import ffmpeg_svc
 
 router = APIRouter(prefix="/imagen", tags=["Imagen"])
+logger = logging.getLogger(__name__)
 
 TEMP_DIR = "/tmp_media"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -47,6 +49,7 @@ async def capture_frame(
     Returns:
         Imagen WebP del frame capturado (optimizada, ~70% menos peso que PNG)
     """
+    logger.info(f"[ENDPOINT] POST /imagen/captura - Recibida solicitud, archivo: {file.filename}, tiempo: {tiempo}, calidad: {calidad}")
     input_path = save_upload(file)
     output_filename = f"frame_{uuid.uuid4()}.webp"
     output_path = os.path.join(TEMP_DIR, output_filename)
@@ -63,6 +66,7 @@ async def capture_frame(
             filename=f"frame_{tiempo.replace(':', '-')}.webp"
         )
     except Exception as e:
+        logger.error(f"[ENDPOINT] Error al capturar frame: {str(e)}")
         background_tasks.add_task(cleanup_file, input_path)
         background_tasks.add_task(cleanup_file, output_path)
         return JSONResponse(

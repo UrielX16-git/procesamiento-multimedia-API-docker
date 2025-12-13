@@ -6,9 +6,11 @@ from fastapi.responses import FileResponse, JSONResponse
 import shutil
 import os
 import uuid
+import logging
 from ..services import ffmpeg_svc
 
 router = APIRouter(prefix="/video", tags=["Video"])
+logger = logging.getLogger(__name__)
 
 TEMP_DIR = "/tmp_media"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -40,6 +42,7 @@ async def video_details(
     Returns:
         JSON con información detallada del video (formato, streams, duración, etc.)
     """
+    logger.info(f"[ENDPOINT] POST /video/detalles - Recibida solicitud, archivo: {file.filename}")
     filepath = save_upload(file)
     
     try:
@@ -47,6 +50,7 @@ async def video_details(
         background_tasks.add_task(cleanup_file, filepath)
         return metadata
     except Exception as e:
+        logger.error(f"[ENDPOINT] Error al procesar video: {str(e)}")
         background_tasks.add_task(cleanup_file, filepath)
         return JSONResponse(
             status_code=500,
@@ -65,6 +69,7 @@ async def extract_audio(
     Returns:
         Archivo MP3 con el audio extraído
     """
+    logger.info(f"[ENDPOINT] POST /video/extraer-audio - Recibida solicitud, archivo: {file.filename}")
     input_path = save_upload(file)
     output_filename = f"audio_{uuid.uuid4()}.mp3"
     output_path = os.path.join(TEMP_DIR, output_filename)
@@ -82,6 +87,7 @@ async def extract_audio(
             filename=f"audio_{file.filename.rsplit('.', 1)[0]}.mp3"
         )
     except Exception as e:
+        logger.error(f"[ENDPOINT] Error al extraer audio: {str(e)}")
         background_tasks.add_task(cleanup_file, input_path)
         background_tasks.add_task(cleanup_file, output_path)
         return JSONResponse(
@@ -101,11 +107,12 @@ async def compress_video(
     
     Args:
         file: Archivo de video a comprimir
-        max_threads: Número máximo de threads (default: 4, para ~70% CPU en 6 cores)
+        max_threads: Número máximo de threads (default: 4, 0=auto detectar todos los hilos)
     
     Returns:
         Archivo de video comprimido
     """
+    logger.info(f"[ENDPOINT] POST /video/comprimir - Recibida solicitud, archivo: {file.filename}, max_threads: {max_threads}")
     input_path = save_upload(file)
     output_filename = f"compressed_{uuid.uuid4()}.mp4"
     output_path = os.path.join(TEMP_DIR, output_filename)
@@ -123,9 +130,61 @@ async def compress_video(
             filename=f"compressed_{file.filename}"
         )
     except Exception as e:
+        logger.error(f"[ENDPOINT] Error al comprimir video: {str(e)}")
         background_tasks.add_task(cleanup_file, input_path)
         background_tasks.add_task(cleanup_file, output_path)
         return JSONResponse(
             status_code=500,
             content={"error": f"Error al comprimir video: {str(e)}"}
         )
+
+
+@router.post("/convertir-mp4")
+async def convert_to_mp4(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    max_threads: int = 4
+):
+    """
+    Convierte un video de cualquier formato a MP4 de forma ultra-optimizada.
+    
+    ESTRATEGIA INTELIGENTE:
+    - MKV/WEBM: Stream copy directo (INSTANTÁNEO - segundos) sin subtítulos
+    - Otros formatos: Intenta stream copy, si falla re-codifica
+    
+    Args:
+        file: Archivo de video a convertir
+        max_threads: Número máximo de threads (default: 4, 0=auto detectar todos los hilos)
+    
+    Returns:
+        Archivo de video en formato MP4
+    """
+    logger.info(f"[ENDPOINT] POST /video/convertir-mp4 - Recibida solicitud, archivo: {file.filename}, max_threads: {max_threads}")
+    input_path = save_upload(file)
+    
+    # Obtener el nombre base sin extensión
+    base_filename = file.filename.rsplit('.', 1)[0] if '.' in file.filename else file.filename
+    output_filename = f"converted_{uuid.uuid4()}.mp4"
+    output_path = os.path.join(TEMP_DIR, output_filename)
+    
+    try:
+        ffmpeg_svc.convert_to_mp4(input_path, output_path, max_threads=max_threads)
+        
+        # Limpiar archivos después de enviar la respuesta
+        background_tasks.add_task(cleanup_file, input_path)
+        background_tasks.add_task(cleanup_file, output_path)
+        
+        return FileResponse(
+            output_path,
+            media_type="video/mp4",
+            filename=f"{base_filename}.mp4"
+        )
+    except Exception as e:
+        logger.error(f"[ENDPOINT] Error al convertir video: {str(e)}")
+        background_tasks.add_task(cleanup_file, input_path)
+        background_tasks.add_task(cleanup_file, output_path)
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Error al convertir video: {str(e)}"}
+        )
+

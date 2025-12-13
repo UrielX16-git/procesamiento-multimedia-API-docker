@@ -117,6 +117,16 @@ curl -X POST \
   -o frame.webp
 ```
 
+### 7. Convertir Video a MP4
+
+```bash
+curl -X 'POST' \
+  'http://localhost:8000/video/convertir-mp4' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: multipart/form-data' \
+  -F 'file=@compressed_PjsSiempreExcelentes.mp4;type=video/mp4'
+```
+
 ## 🔧 Configuración
 
 ### Variables de Entorno
