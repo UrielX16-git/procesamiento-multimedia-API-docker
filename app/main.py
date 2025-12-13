@@ -4,7 +4,7 @@ Arquitectura de "conmutador ligero" que procesa bajo demanda.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import video, audio, imagen
+from .routers import video, audio, imagen, jobs
 import os
 import logging
 
@@ -22,15 +22,16 @@ TEMP_DIR = "/tmp_media"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 logger.info("=" * 60)
-logger.info("Iniciando API de Procesamiento Multimedia")
+logger.info("Iniciando API de Procesamiento Multimedia con Cola")
 logger.info(f"Directorio temporal: {TEMP_DIR}")
+logger.info("Sistema de cola: Valkey + Worker asíncrono")
 logger.info("=" * 60)
 
 # Inicializar FastAPI
 app = FastAPI(
     title="API de Procesamiento Multimedia",
-    description="API REST para procesamiento de video y audio usando FFmpeg",
-    version="1.0.0",
+    description="API REST para procesamiento de video y audio usando FFmpeg con sistema de cola",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -48,6 +49,7 @@ app.add_middleware(
 app.include_router(video.router)
 app.include_router(audio.router)
 app.include_router(imagen.router)
+app.include_router(jobs.router)
 
 
 @app.get("/")
@@ -55,15 +57,20 @@ async def root():
     """Endpoint raíz con información de la API."""
     logger.info("Solicitud recibida en endpoint raiz /")
     return {
-        "message": "API de Procesamiento Multimedia",
-        "version": "1.0.0",
+        "message": "API de Procesamiento Multimedia con Cola",
+        "version": "2.0.0",
         "status": "online",
+        "features": {
+            "queue_system": "Valkey + Worker asíncrono",
+            "priority_queue": "Habilitado (high/normal/low)",
+            "auto_cleanup": "Archivos temporales limpios automáticamente"
+        },
         "endpoints": {
             "video": {
                 "/video/detalles": "Extraer metadatos de video",
                 "/video/extraer-audio": "Extraer audio de video a MP3",
-                "/video/comprimir": "Comprimir video",
-                "/video/convertir-mp4": "Convertir video a MP4"
+                "/video/comprimir": "Comprimir video (usa cola para archivos >100MB)",
+                "/video/convertir-mp4": "Convertir video a MP4 (usa cola para archivos >100MB)"
             },
             "audio": {
                 "/audio/cortar": "Recortar audio entre timestamps",
@@ -72,8 +79,15 @@ async def root():
             "imagen": {
                 "/imagen/captura": "Capturar frame de video en tiempo específico"
             },
+            "jobs": {
+                "/jobs/status/{job_id}": "Consultar estado de un job",
+                "/jobs/queue": "Ver cola de jobs pendientes",
+                "/jobs/download/{job_id}": "Descargar resultado de job completado",
+                "/jobs/{job_id}": "Cancelar job pendiente (DELETE)",
+                "/jobs/stats": "Estadísticas de la cola"
+            },
             "utilidades": {
-                "/reset": "Limpiar archivos temporales manualmente",
+                "/reset": "Limpiar archivos temporales manualmente (DELETE)",
                 "/health": "Estado de salud de la API"
             }
         },

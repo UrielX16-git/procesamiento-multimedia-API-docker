@@ -1,19 +1,27 @@
 """
 Router para endpoints relacionados con procesamiento de video.
 """
-from fastapi import APIRouter, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Form
 from fastapi.responses import FileResponse, JSONResponse
 import shutil
 import os
 import uuid
 import logging
 from ..services import ffmpeg_svc
+from ..services.queue_svc import QueueService
 
 router = APIRouter(prefix="/video", tags=["Video"])
 logger = logging.getLogger(__name__)
 
 TEMP_DIR = "/tmp_media"
 os.makedirs(TEMP_DIR, exist_ok=True)
+
+# Directorio para archivos grandes que van a cola
+UPLOADS_DIR = "/disk/uploads"
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+# Instancia del servicio de cola
+queue = QueueService()
 
 
 def save_upload(file: UploadFile) -> str:
@@ -98,41 +106,88 @@ async def extract_audio(
 
 @router.post("/comprimir")
 async def compress_video(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    max_threads: int = 4
+    max_threads: int = Form(4),
+    use_queue: bool = Form(True)
 ):
     """
     Comprime un video para reducir su tamaño de forma optimizada.
     
+    NUEVO: Usa cola de procesamiento para evitar sobrecarga.
+    - Archivos >100MB van automáticamente a la cola
+    - Prioridad BAJA (operación pesada)
+    
     Args:
         file: Archivo de video a comprimir
         max_threads: Número máximo de threads (default: 4, 0=auto detectar todos los hilos)
+        use_queue: Si True, usa cola de procesamiento (default: True)
     
     Returns:
-        Archivo de video comprimido
+        Si usa cola: JSON con job_id y status_url
+        Si es directo: Archivo de video comprimido
     """
-    logger.info(f"[ENDPOINT] POST /video/comprimir - Recibida solicitud, archivo: {file.filename}, max_threads: {max_threads}")
-    input_path = save_upload(file)
+    logger.info(f"[ENDPOINT] POST /video/comprimir - Archivo: {file.filename}, max_threads: {max_threads}, use_queue: {use_queue}")
+    
+    # Guardar archivo y calcular tamaño
+    file_size_mb = 0
+    upload_path = os.path.join(UPLOADS_DIR, f"{uuid.uuid4()}_{file.filename}")
+    
+    with open(upload_path, "wb") as buffer:
+        chunk_size = 8 * 1024 * 1024  # 8MB chunks
+        while chunk := await file.read(chunk_size):
+            buffer.write(chunk)
+            file_size_mb += len(chunk) / (1024 * 1024)
+    
+    logger.info(f"[ENDPOINT] Archivo guardado: {file_size_mb:.2f} MB")
+    
+    # Si es pesado o se fuerza cola, usar sistema de cola
+    if use_queue or file_size_mb > 100:  # >100MB a cola automáticamente
+        job_id = queue.create_job(
+            job_type="compress_video",
+            input_file=upload_path,
+            original_filename=file.filename,
+            file_size_mb=file_size_mb,
+            parameters={"max_threads": max_threads},
+            priority=QueueService.PRIORITY_LOW  # Prioridad BAJA
+        )
+        
+        logger.info(f"[ENDPOINT] Job creado: {job_id} - Agregado a cola con prioridad BAJA")
+        
+        return JSONResponse({
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Job agregado a la cola de procesamiento",
+            "status_url": f"/jobs/status/{job_id}",
+            "download_url": f"/jobs/download/{job_id}",
+            "file_size_mb": round(file_size_mb, 2),
+            "priority": "low",
+            "queue_info": "El job se procesará cuando sea su turno según prioridad"
+        })
+    
+    # Archivos pequeños: procesamiento directo (comportamiento legacy)
+    logger.info(f"[ENDPOINT] Procesamiento directo (archivo pequeño: {file_size_mb:.2f}MB)")
+    input_path = upload_path
     output_filename = f"compressed_{uuid.uuid4()}.mp4"
     output_path = os.path.join(TEMP_DIR, output_filename)
     
     try:
         ffmpeg_svc.compress_video(input_path, output_path, max_threads=max_threads)
         
-        # Limpiar archivos después de enviar la respuesta
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
+        # Limpiar archivo de entrada
+        if os.path.exists(input_path):
+            os.remove(input_path)
         
+        # Retornar archivo (se limpiará después por el caller)
         return FileResponse(
             output_path,
             media_type="video/mp4",
-            filename=f"compressed_{file.filename}"
+            filename=f"compressed_{file.filename}",
+            background=BackgroundTasks().add_task(cleanup_file, output_path)
         )
     except Exception as e:
         logger.error(f"[ENDPOINT] Error al comprimir video: {str(e)}")
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
+        cleanup_file(input_path)
+        cleanup_file(output_path)
         return JSONResponse(
             status_code=500,
             content={"error": f"Error al comprimir video: {str(e)}"}
@@ -141,12 +196,16 @@ async def compress_video(
 
 @router.post("/convertir-mp4")
 async def convert_to_mp4(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    max_threads: int = 4
+    max_threads: int = Form(4),
+    use_queue: bool = Form(True)
 ):
     """
     Convierte un video de cualquier formato a MP4 de forma ultra-optimizada.
+    
+    NUEVO: Usa cola de procesamiento para evitar sobrecarga.
+    - Archivos >100MB van automáticamente a la cola
+    - Prioridad BAJA (operación pesada)
     
     ESTRATEGIA INTELIGENTE:
     - MKV/WEBM: Stream copy directo (INSTANTÁNEO - segundos) sin subtítulos
@@ -155,14 +214,53 @@ async def convert_to_mp4(
     Args:
         file: Archivo de video a convertir
         max_threads: Número máximo de threads (default: 4, 0=auto detectar todos los hilos)
+        use_queue: Si True, usa cola de procesamiento (default: True)
     
     Returns:
-        Archivo de video en formato MP4
+        Si usa cola: JSON con job_id y status_url
+        Si es directo: Archivo de video en formato MP4
     """
-    logger.info(f"[ENDPOINT] POST /video/convertir-mp4 - Recibida solicitud, archivo: {file.filename}, max_threads: {max_threads}")
-    input_path = save_upload(file)
+    logger.info(f"[ENDPOINT] POST /video/convertir-mp4 - Archivo: {file.filename}, max_threads: {max_threads}, use_queue: {use_queue}")
     
-    # Obtener el nombre base sin extensión
+    # Guardar archivo y calcular tamaño
+    file_size_mb = 0
+    upload_path = os.path.join(UPLOADS_DIR, f"{uuid.uuid4()}_{file.filename}")
+    
+    with open(upload_path, "wb") as buffer:
+        chunk_size = 8 * 1024 * 1024  # 8MB chunks
+        while chunk := await file.read(chunk_size):
+            buffer.write(chunk)
+            file_size_mb += len(chunk) / (1024 * 1024)
+    
+    logger.info(f"[ENDPOINT] Archivo guardado: {file_size_mb:.2f} MB")
+    
+    # Si es pesado o se fuerza cola, usar sistema de cola
+    if use_queue or file_size_mb > 100:  # >100MB a cola automáticamente
+        job_id = queue.create_job(
+            job_type="convert_mp4",
+            input_file=upload_path,
+            original_filename=file.filename,
+            file_size_mb=file_size_mb,
+            parameters={"max_threads": max_threads},
+            priority=QueueService.PRIORITY_LOW  # Prioridad BAJA
+        )
+        
+        logger.info(f"[ENDPOINT] Job creado: {job_id} - Agregado a cola con prioridad BAJA")
+        
+        return JSONResponse({
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Job agregado a la cola de procesamiento",
+            "status_url": f"/jobs/status/{job_id}",
+            "download_url": f"/jobs/download/{job_id}",
+            "file_size_mb": round(file_size_mb, 2),
+            "priority": "low",
+            "queue_info": "El job se procesará cuando sea su turno según prioridad"
+        })
+    
+    # Archivos pequeños: procesamiento directo (comportamiento legacy)
+    logger.info(f"[ENDPOINT] Procesamiento directo (archivo pequeño: {file_size_mb:.2f}MB)")
+    input_path = upload_path
     base_filename = file.filename.rsplit('.', 1)[0] if '.' in file.filename else file.filename
     output_filename = f"converted_{uuid.uuid4()}.mp4"
     output_path = os.path.join(TEMP_DIR, output_filename)
@@ -170,19 +268,21 @@ async def convert_to_mp4(
     try:
         ffmpeg_svc.convert_to_mp4(input_path, output_path, max_threads=max_threads)
         
-        # Limpiar archivos después de enviar la respuesta
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
+        # Limpiar archivo de entrada
+        if os.path.exists(input_path):
+            os.remove(input_path)
         
+        # Retornar archivo (se limpiará después por el caller)
         return FileResponse(
             output_path,
             media_type="video/mp4",
-            filename=f"{base_filename}.mp4"
+            filename=f"{base_filename}.mp4",
+            background=BackgroundTasks().add_task(cleanup_file, output_path)
         )
     except Exception as e:
         logger.error(f"[ENDPOINT] Error al convertir video: {str(e)}")
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
+        cleanup_file(input_path)
+        cleanup_file(output_path)
         return JSONResponse(
             status_code=500,
             content={"error": f"Error al convertir video: {str(e)}"}

@@ -1,11 +1,35 @@
 services:
+  # Servicio Valkey (fork de Redis) para gestión de cola
+  valkey:
+    image: valkey/valkey:7-alpine
+    container_name: multimedia-valkey
+    restart: unless-stopped
+    volumes:
+      - valkey_data:/data
+    command: valkey-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: [ "CMD", "valkey-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # API principal
   api:
     build: .
     container_name: multimedia-api
+    depends_on:
+      valkey:
+        condition: service_healthy
     ports:
       - "8000:80"
     environment:
       - PYTHONUNBUFFERED=1
+      - VALKEY_HOST=valkey
+      - VALKEY_PORT=6379
+    volumes:
+      - ./data/uploads:/disk/uploads
+      - ./data/results:/disk/results
+      - ./data/temp:/disk/temp
     restart: unless-stopped
     deploy:
       resources:
@@ -21,3 +45,32 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  # Worker para procesamiento de cola
+  worker:
+    build: .
+    container_name: multimedia-worker
+    depends_on:
+      valkey:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VALKEY_HOST=valkey
+      - VALKEY_PORT=6379
+    volumes:
+      - ./data/uploads:/disk/uploads
+      - ./data/results:/disk/results
+      - ./data/temp:/disk/temp
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '6.0'
+          memory: 6G
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    command: python -m app.services.worker_svc
+
+volumes:
+  valkey_data:
