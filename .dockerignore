@@ -22,3 +22,5 @@ test_*.py
 *.mp3
 *.avi
 *.wav
+data/
+data/*

@@ -63,7 +63,8 @@ async def root():
         "features": {
             "queue_system": "Valkey + Worker asíncrono",
             "priority_queue": "Habilitado (high/normal/low)",
-            "auto_cleanup": "Archivos temporales limpios automáticamente"
+            "auto_cleanup": "Archivos procesados limpios automáticamente (TTL: 3 horas)",
+            "cleanup_frequency": "Cada 1 hora"
         },
         "endpoints": {
             "video": {

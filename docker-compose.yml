@@ -34,11 +34,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '6.0' # Máximo 600%
-          memory: 6G # Límite de memoria
-        reservations:
-          cpus: '0.1'
-          memory: 128M
+          cpus: '6.0'
+          memory: 6G
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost/health" ]
       interval: 30s
@@ -67,9 +64,6 @@ services:
         limits:
           cpus: '6.0'
           memory: 6G
-        reservations:
-          cpus: '0.1'
-          memory: 128M
     command: python -m app.services.worker_svc
 
 volumes:

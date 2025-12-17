@@ -218,10 +218,45 @@ class Worker:
 
 
 if __name__ == "__main__":
+    import asyncio
+    from .cleanup_svc import cleanup_old_files
+    
     # Asegurar que los directorios existen
     os.makedirs("/disk/uploads", exist_ok=True)
     os.makedirs("/disk/results", exist_ok=True)
     os.makedirs("/disk/temp", exist_ok=True)
     
-    worker = Worker()
-    asyncio.run(worker.run())
+    async def cleanup_task():
+        """Tarea de limpieza automática que se ejecuta cada hora."""
+        logger.info("[CLEANUP] Iniciando tarea de limpieza automática (ejecución cada 1 hora)")
+        
+        # Esperar 5 minutos antes de la primera limpieza (dar tiempo al worker a iniciar)
+        await asyncio.sleep(300)
+        
+        while True:
+            try:
+                logger.info("[CLEANUP] Ejecutando limpieza programada...")
+                stats = cleanup_old_files()
+                logger.info(
+                    f"[CLEANUP] Limpieza completada - "
+                    f"Archivos eliminados: {stats['files_deleted']}, "
+                    f"Espacio liberado: {stats['space_freed_mb']} MB"
+                )
+            except Exception as e:
+                logger.error(f"[CLEANUP] Error en tarea de limpieza: {str(e)}")
+            
+            # Esperar 1 hora (3600 segundos) antes de la siguiente limpieza
+            await asyncio.sleep(3600)
+    
+    async def main():
+        """Ejecuta worker y tarea de limpieza en paralelo."""
+        worker = Worker()
+        
+        # Ejecutar worker y cleanup en paralelo
+        await asyncio.gather(
+            worker.run(),
+            cleanup_task()
+        )
+    
+    asyncio.run(main())
+

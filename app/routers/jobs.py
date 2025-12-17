@@ -86,7 +86,7 @@ async def download_result(job_id: str):
     if not os.path.exists(output_file):
         raise HTTPException(
             status_code=404, 
-            detail="Archivo de resultado no encontrado o ya expiró (TTL: 8 horas)"
+            detail="Archivo de resultado no encontrado o ya expiró (TTL: 3 horas)"
         )
     
     # Determinar tipo MIME según extensión
@@ -168,7 +168,7 @@ async def get_stats():
             "processing": stats["processing"]
         },
         "completed": {
-            "last_8_hours": stats["completed_8h"]
+            "last_3_hours": stats["completed_3h"]
         },
         "failed": {
             "last_7_days": stats["failed_7d"]

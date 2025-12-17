@@ -181,9 +181,9 @@ class QueueService:
             if status == "completed":
                 job_data["output_file"] = output_file
                 job_data["result_url"] = f"/jobs/download/{job_id}"
-                # TTL de 8 horas para jobs completados
+                # TTL de 3 horas para jobs completados
                 self.redis.zadd("completed_jobs", {job_id: datetime.utcnow().timestamp()})
-                self.redis.expire(f"job:{job_id}", 28800)  # 8 horas
+                self.redis.expire(f"job:{job_id}", 10800)  # 3 horas
                 logger.info(f"[QUEUE] Job completado: {job_id}")
             else:
                 job_data["error"] = error
@@ -204,7 +204,7 @@ class QueueService:
         return {
             "pending": self.redis.zcard("job_queue"),
             "processing": self.redis.scard("processing_jobs"),
-            "completed_8h": self.redis.zcard("completed_jobs"),
+            "completed_3h": self.redis.zcard("completed_jobs"),
             "failed_7d": self.redis.zcard("failed_jobs")
         }
     
