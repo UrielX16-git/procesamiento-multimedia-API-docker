@@ -1,17 +1,111 @@
 """
-Router para gestión y monitoreo de jobs en la cola.
+Router para gestión de jobs (cola de procesamiento).
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Form
 from fastapi.responses import FileResponse, JSONResponse
-from ..services.queue_svc import QueueService
 import os
+import json
 import logging
+from ..services.queue_svc import QueueService
+from ..services.upload_svc import UploadService
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 logger = logging.getLogger(__name__)
 
-# Instancia global del servicio de cola
+# Instancia de servicios
 queue = QueueService()
+upload_svc = UploadService()
+
+
+@router.post("/create")
+async def create_job_from_upload(
+    upload_id: str = Form(..., description="ID del archivo subido"),
+    job_type: str = Form(..., description="Tipo de operación"),
+    parameters: str = Form("{}", description="Parámetros adicionales en formato JSON")
+):
+    """
+    Crea un job desde un archivo ya subido.
+    
+    Retorna INSTANTÁNEAMENTE con job_id.
+    
+    Tipos de job disponibles:
+    - get_metadata: Extraer metadatos de video
+    - extract_audio: Extraer audio a MP3
+    - compress_video: Comprimir video (params: max_threads)
+    - convert_mp4: Convertir a MP4 (params: max_threads)
+    - cut_audio: Recortar audio (params: start_time, end_time)
+    - concat_audios: Unir audios (params: upload_ids como lista)
+    - capture_frame: Capturar frame (params: timestamp, quality)
+    
+    Args:
+        upload_id: ID del upload (obtenido de POST /upload)
+        job_type: Tipo de operación
+        parameters: JSON con parámetros específicos de la operación
+        
+    Returns:
+        JSON con job_id para consultar estado y descargar
+    """
+    logger.info(f"[ENDPOINT] POST /jobs/create - upload_id: {upload_id}, job_type: {job_type}")
+    
+    # Validar upload existe
+    upload_data = upload_svc.get_upload(upload_id)
+    if not upload_data:
+        raise HTTPException(status_code=404, detail="Upload no encontrado o expirado")
+    
+    # Parsear parámetros
+    try:
+        params = json.loads(parameters)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Parámetros inválidos (debe ser JSON válido)")
+    
+    # Mapa de prioridades según tipo de job
+    priority_map = {
+        "get_metadata": QueueService.PRIORITY_HIGH,
+        "capture_frame": QueueService.PRIORITY_HIGH,
+        "extract_audio": QueueService.PRIORITY_NORMAL,
+        "cut_audio": QueueService.PRIORITY_NORMAL,
+        "concat_audios": QueueService.PRIORITY_NORMAL,
+        "compress_video": QueueService.PRIORITY_LOW,
+        "convert_mp4": QueueService.PRIORITY_LOW
+    }
+    
+    if job_type not in priority_map:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Tipo de job inválido. Tipos válidos: {list(priority_map.keys())}"
+        )
+    
+    priority = priority_map[job_type]
+    
+    # Crear job
+    job_id = queue.create_job(
+        job_type=job_type,
+        upload_id=upload_id,
+        input_file=upload_data["file_path"],
+        original_filename=upload_data["filename"],
+        file_size_mb=upload_data["file_size_mb"],
+        parameters=params,
+        priority=priority
+    )
+    
+    priority_names = {
+        QueueService.PRIORITY_HIGH: "high",
+        QueueService.PRIORITY_NORMAL: "normal",
+        QueueService.PRIORITY_LOW: "low"
+    }
+    
+    logger.info(f"[ENDPOINT] Job creado: {job_id} (prioridad: {priority_names[priority]})")
+    
+    return JSONResponse({
+        "job_id": job_id,
+        "upload_id": upload_id,
+        "job_type": job_type,
+        "status": "pending",
+        "priority": priority_names[priority],
+        "message": f"Job creado con prioridad {priority_names[priority].upper()}",
+        "status_url": f"/jobs/status/{job_id}",
+        "download_url": f"/jobs/download/{job_id}"
+    })
 
 
 @router.get("/status/{job_id}")
@@ -93,7 +187,8 @@ async def download_result(job_id: str):
     media_types = {
         ".mp4": "video/mp4",
         ".mp3": "audio/mpeg",
-        ".webp": "image/webp"
+        ".webp": "image/webp",
+        ".json": "application/json"
     }
     ext = os.path.splitext(output_file)[1]
     media_type = media_types.get(ext, "application/octet-stream")

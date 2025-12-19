@@ -38,7 +38,8 @@ env/
 Thumbs.db
 
 # Project specific
-tmp_media/
+data/valkey/
+data/results/
 *.mp4
 *.mp3
 *.avi

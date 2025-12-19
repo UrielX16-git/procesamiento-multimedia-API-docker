@@ -4,7 +4,7 @@ Arquitectura de "conmutador ligero" que procesa bajo demanda.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import video, audio, imagen, jobs
+from .routers import video, audio, imagen, jobs, uploads
 import os
 import logging
 
@@ -46,10 +46,11 @@ app.add_middleware(
 )
 
 # Registrar routers
+app.include_router(uploads.router)  # NUEVO: upload en 2 pasos
+app.include_router(jobs.router)
 app.include_router(video.router)
 app.include_router(audio.router)
 app.include_router(imagen.router)
-app.include_router(jobs.router)
 
 
 @app.get("/")
@@ -64,21 +65,36 @@ async def root():
             "queue_system": "Valkey + Worker asíncrono",
             "priority_queue": "Habilitado (high/normal/low)",
             "auto_cleanup": "Archivos procesados limpios automáticamente (TTL: 3 horas)",
-            "cleanup_frequency": "Cada 1 hora"
+            "cleanup_frequency": "Cada 1 hora",
+            "async_processing": "Sistema de upload en 2 pasos con respuesta instantánea",
+            "upload_ttl": "3 horas para uploads sin usar",
+            "file_reuse": "Un archivo puede usarse para múltiples jobs"
+        },
+        "workflow": {
+            "1_upload": "POST /upload → {upload_id} (respuesta instantánea)",
+            "2_create_job": "POST /jobs/create → {job_id} (respuesta instantánea)",
+            "3_check_status": "GET /jobs/status/{job_id} → polling cada 5s",
+            "4_download": "GET /jobs/download/{job_id} → descargar resultado"
         },
         "endpoints": {
+            "upload": {
+                "/upload": "[POST] Subir archivo (retorna upload_id instantáneo)",
+                "/upload/{upload_id}": "[GET] Info del upload",
+                "/uploads": "[GET] Listar uploads activos",
+                "/upload/{upload_id}": "[DELETE] Eliminar upload (si ref_count=0)"
+            },
             "video": {
-                "/video/detalles": "Extraer metadatos de video",
-                "/video/extraer-audio": "Extraer audio de video a MP3",
-                "/video/comprimir": "Comprimir video (usa cola para archivos >100MB)",
-                "/video/convertir-mp4": "Convertir video a MP4 (usa cola para archivos >100MB)"
+                "/video/detalles": "[ASÍNCRONO] Extraer metadatos de video (Prioridad: ALTA)",
+                "/video/extraer-audio": "[ASÍNCRONO] Extraer audio a MP3 (Prioridad: NORMAL)",
+                "/video/comprimir": "[ASÍNCRONO] Comprimir video (Prioridad: BAJA)",
+                "/video/convertir-mp4": "[ASÍNCRONO] Convertir a MP4 (Prioridad: BAJA)"
             },
             "audio": {
-                "/audio/cortar": "Recortar audio entre timestamps",
-                "/audio/unir": "Unir múltiples archivos de audio"
+                "/audio/cortar": "[ASÍNCRONO] Recortar audio (Prioridad: NORMAL)",
+                "/audio/unir": "[ASÍNCRONO] Unir múltiples audios (Prioridad: NORMAL)"
             },
             "imagen": {
-                "/imagen/captura": "Capturar frame de video en tiempo específico"
+                "/imagen/captura": "[ASÍNCRONO] Capturar frame (Prioridad: ALTA)"
             },
             "jobs": {
                 "/jobs/status/{job_id}": "Consultar estado de un job",
@@ -107,55 +123,69 @@ async def health_check():
 @app.delete("/reset")
 async def reset_temp_files():
     """
-    Limpia manualmente todos los archivos temporales del directorio /tmp_media.
+    Limpia manualmente TODOS los archivos temporales (uploads, results, temp) inmediatamente.
+    Ignora los TTL configurados.
     
     Returns:
-        JSON con estadísticas de limpieza: archivos eliminados y espacio liberado
+        JSON con estadísticas de limpieza
     """
     import shutil
+    from .services.cleanup_svc import cleanup_old_files, cleanup_old_uploads
     
-    if not os.path.exists(TEMP_DIR):
-        return {
-            "status": "success",
-            "message": "Directorio temporal no existe",
-            "files_deleted": 0,
-            "space_freed_mb": 0
-        }
+    stats = {
+        "temp": {"files": 0, "space_mb": 0},
+        "results": {"files": 0, "space_mb": 0},
+        "uploads": {"files": 0, "space_mb": 0}
+    }
     
-    files_deleted = 0
-    space_freed = 0
-    
-    try:
-        for filename in os.listdir(TEMP_DIR):
-            filepath = os.path.join(TEMP_DIR, filename)
-            if os.path.isfile(filepath):
-                space_freed += os.path.getsize(filepath)
-                files_deleted += 1
-        
-        for filename in os.listdir(TEMP_DIR):
-            filepath = os.path.join(TEMP_DIR, filename)
-            try:
-                if os.path.isfile(filepath):
-                    os.remove(filepath)
-                elif os.path.isdir(filepath):
-                    shutil.rmtree(filepath)
-            except Exception as e:
-                print(f"Error eliminando {filepath}: {e}")
-        
-        space_freed_mb = round(space_freed / (1024 * 1024), 2)
-        
-        return {
-            "status": "success",
-            "message": "Archivos temporales eliminados",
-            "files_deleted": files_deleted,
-            "space_freed_mb": space_freed_mb
-        }
-    
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Error al limpiar archivos: {str(e)}",
-            "files_deleted": 0,
-            "space_freed_mb": 0
-        }
+    # 1. Limpiar carpeta temporal local
+    if os.path.exists(TEMP_DIR):
+        try:
+            temp_files = 0
+            temp_space = 0
+            for filename in os.listdir(TEMP_DIR):
+                filepath = os.path.join(TEMP_DIR, filename)
+                try:
+                    if os.path.isfile(filepath):
+                        temp_space += os.path.getsize(filepath)
+                        os.remove(filepath)
+                        temp_files += 1
+                    elif os.path.isdir(filepath):
+                        shutil.rmtree(filepath)
+                except Exception as e:
+                    logger.error(f"Error borrando {filepath}: {e}")
+            
+            stats["temp"]["files"] = temp_files
+            stats["temp"]["space_mb"] = round(temp_space / (1024 * 1024), 2)
+        except Exception as e:
+            logger.error(f"Error limpando temp: {e}")
 
+    # 2. Forzar limpieza de Results (TTL=0)
+    try:
+        results_clean = cleanup_old_files(ttl_hours=0)
+        stats["results"]["files"] = results_clean.get("files_deleted", 0)
+        stats["results"]["space_mb"] = results_clean.get("space_freed_mb", 0)
+    except Exception as e:
+        logger.error(f"Error forzando limpieza results: {e}")
+
+    # 3. Forzar limpieza de Uploads (TTL=0)
+    try:
+        uploads_clean = cleanup_old_uploads(ttl_hours=0)
+        stats["uploads"]["files"] = uploads_clean.get("files_deleted", 0)
+        stats["uploads"]["space_mb"] = uploads_clean.get("space_freed_mb", 0)
+    except Exception as e:
+        logger.error(f"Error forzando limpieza uploads: {e}")
+    
+    total_files = stats["temp"]["files"] + stats["results"]["files"] + stats["uploads"]["files"]
+    total_space = stats["temp"]["space_mb"] + stats["results"]["space_mb"] + stats["uploads"]["space_mb"]
+
+    return {
+        "status": "success",
+        "message": "Limpieza forzada completada",
+        "timestamp": os.getenv("last_reset_time"),
+        "summary": {
+            "total_files_deleted": total_files,
+            "total_space_freed_mb": round(total_space, 2)
+        },
+        "details": stats
+    }

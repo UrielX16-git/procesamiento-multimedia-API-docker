@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def get_video_metadata(input_path: str) -> Dict[str, Any]:
     """
-    Extrae metadatos de un archivo de video usando ffprobe.
+    Extrae metadatos de un archivo de video usando ffprobe de forma optimizada.
     
     Args:
         input_path: Ruta al archivo de video
@@ -23,7 +23,7 @@ def get_video_metadata(input_path: str) -> Dict[str, Any]:
     Returns:
         Diccionario con metadatos del video
     """
-    logger.info(f"[GET_METADATA] Iniciando extraccion de metadatos")
+    logger.info(f"[GET_METADATA] Iniciando extraccion de metadatos (optimizado)")
     logger.info(f"[GET_METADATA] Archivo: {input_path}")
     
     cmd = [
@@ -32,10 +32,12 @@ def get_video_metadata(input_path: str) -> Dict[str, Any]:
         "-print_format", "json",
         "-show_format",
         "-show_streams",
+        "-analyzeduration", "10M",  # Limitar análisis a 10MB para archivos grandes
+        "-probesize", "10M",  # Limitar tamaño de prueba
         input_path
     ]
     
-    logger.info(f"[GET_METADATA] Ejecutando ffprobe...")
+    logger.info(f"[GET_METADATA] Ejecutando ffprobe (analisis limitado para velocidad)...")
     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     metadata = json.loads(result.stdout)
     logger.info(f"[GET_METADATA] Metadatos extraidos exitosamente")
@@ -44,31 +46,68 @@ def get_video_metadata(input_path: str) -> Dict[str, Any]:
 
 def extract_audio_from_video(input_path: str, output_path: str, quality: int = 2) -> None:
     """
-    Extrae el audio de un video y lo convierte a MP3.
+    Extrae el audio de un video y lo convierte a MP3 de forma ULTRA-OPTIMIZADA.
+    
+    Estrategia inteligente:
+    1. Si el audio ya es MP3: Copia directa (INSTANTÁNEO - segundos)
+    2. Si no: Re-codifica a MP3 (normal - minutos)
     
     Args:
         input_path: Ruta al archivo de video
         output_path: Ruta donde guardar el audio MP3
         quality: Calidad del MP3 (0-9, donde 0 es mejor calidad)
     """
-    logger.info(f"[EXTRACT_AUDIO] Iniciando extraccion de audio de video")
+    logger.info(f"[EXTRACT_AUDIO] Iniciando extraccion de audio de video (OPTIMIZADO)")
     logger.info(f"[EXTRACT_AUDIO] Archivo entrada: {input_path}")
     logger.info(f"[EXTRACT_AUDIO] Archivo salida: {output_path}")
-    logger.info(f"[EXTRACT_AUDIO] Calidad MP3: {quality} (0=mejor, 9=peor)")
     
+    # Primero detectar el codec de audio
+    try:
+        probe_cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            input_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+        audio_codec = result.stdout.strip()
+        logger.info(f"[EXTRACT_AUDIO] Codec de audio detectado: {audio_codec}")
+        
+        # Si ya es MP3, usar stream copy (SUPER RAPIDO)
+        if audio_codec == "mp3":
+            logger.info(f"[EXTRACT_AUDIO] Audio ya es MP3 - usando stream copy (INSTANTANEO)")
+            cmd = [
+                "ffmpeg",
+                "-i", input_path,
+                "-vn",  # Sin video
+                "-acodec", "copy",  # Copiar audio sin re-codificar
+                "-y",
+                output_path
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            logger.info(f"[EXTRACT_AUDIO] Audio extraido exitosamente via stream copy")
+            return
+    
+    except Exception as e:
+        logger.warning(f"[EXTRACT_AUDIO] No se pudo detectar codec, usando re-codificacion: {str(e)}")
+    
+    # Fallback: Re-codificar a MP3
+    logger.info(f"[EXTRACT_AUDIO] Re-codificando audio a MP3 (calidad: {quality})")
     cmd = [
         "ffmpeg",
         "-i", input_path,
         "-vn",  # Sin video
         "-acodec", "libmp3lame",
         "-q:a", str(quality),
-        "-y",  # Sobrescribir sin preguntar
+        "-y",
         output_path
     ]
     
     logger.info(f"[EXTRACT_AUDIO] Ejecutando FFmpeg...")
     subprocess.run(cmd, check=True, capture_output=True)
-    logger.info(f"[EXTRACT_AUDIO] Audio extraido exitosamente")
+    logger.info(f"[EXTRACT_AUDIO] Audio extraido exitosamente via re-codificacion")
 
 
 def compress_video(input_path: str, output_path: str, crf: int = 28, fps: int = 30, audio_bitrate: str = "128k", max_threads: int = 4) -> None:

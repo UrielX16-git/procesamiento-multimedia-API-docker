@@ -120,6 +120,17 @@ class Worker:
                     quality=params.get("quality", 85)
                 )
             
+            elif job_type == "get_metadata":
+                # Obtener metadatos del video
+                import json
+                metadata = ffmpeg_svc.get_video_metadata(input_file)
+                
+                # Guardar como JSON
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(metadata, f, indent=2, ensure_ascii=False)
+                
+                logger.info(f"[WORKER] Metadata guardada como JSON: {output_file}")
+            
             else:
                 raise ValueError(f"Tipo de job no soportado: {job_type}")
             
@@ -138,13 +149,20 @@ class Worker:
                 output_file=output_file
             )
             
-            # Limpiar archivo de entrada
-            if os.path.exists(input_file):
-                try:
-                    os.remove(input_file)
-                    logger.info(f"[WORKER] Archivo de entrada eliminado: {input_file}")
-                except Exception as e:
-                    logger.warning(f"[WORKER] No se pudo eliminar archivo de entrada: {str(e)}")
+            # Decrementar referencia del upload (solo tracking, NO elimina)
+            if job_data.get("upload_id"):
+                from .upload_svc import UploadService
+                upload_service = UploadService()
+                upload_service.decrement_ref(job_data["upload_id"], auto_delete=False)
+                logger.info(f"[WORKER] Referencia decrementada para upload: {job_data['upload_id']} (limpieza delegada a cleanup)")
+            else:
+                # Legacy: si no tiene upload_id, eliminar archivo manualmente
+                if os.path.exists(input_file):
+                    try:
+                        os.remove(input_file)
+                        logger.info(f"[WORKER] Archivo de entrada eliminado (legacy): {input_file}")
+                    except Exception as e:
+                        logger.warning(f"[WORKER] No se pudo eliminar archivo de entrada: {str(e)}")
             
             logger.info(f"[WORKER] Job completado exitosamente: {job_id}")
             logger.info("=" * 80)
@@ -160,15 +178,22 @@ class Worker:
                 error=str(e)
             )
             
-            # Limpiar archivos en caso de error
-            if job_data and job_data.get("input_file"):
-                input_file = job_data["input_file"]
-                if os.path.exists(input_file):
-                    try:
-                        os.remove(input_file)
-                        logger.info(f"[WORKER] Archivo de entrada eliminado tras error: {input_file}")
-                    except:
-                        pass
+            # Decrementar referencia del upload (solo tracking, NO elimina)
+            if job_data and job_data.get("upload_id"):
+                from .upload_svc import UploadService
+                upload_service = UploadService()
+                upload_service.decrement_ref(job_data["upload_id"], auto_delete=False)
+                logger.info(f"[WORKER] Referencia decrementada para upload (error): {job_data['upload_id']} (limpieza delegada a cleanup)")
+            else:
+                # Legacy: limpiar archivos en caso de error
+                if job_data and job_data.get("input_file"):
+                    input_file = job_data["input_file"]
+                    if os.path.exists(input_file):
+                        try:
+                            os.remove(input_file)
+                            logger.info(f"[WORKER] Archivo de entrada eliminado tras error (legacy): {input_file}")
+                        except:
+                            pass
     
     def _get_output_extension(self, job_type: str) -> str:
         """
@@ -186,7 +211,8 @@ class Worker:
             "extract_audio": "mp3",
             "cut_audio": "mp3",
             "concat_audios": "mp3",
-            "capture_frame": "webp"
+            "capture_frame": "webp",
+            "get_metadata": "json"
         }
         return extensions.get(job_type, "bin")
     
@@ -228,6 +254,8 @@ if __name__ == "__main__":
     
     async def cleanup_task():
         """Tarea de limpieza automática que se ejecuta cada hora."""
+        from .cleanup_svc import cleanup_old_files, cleanup_old_uploads
+        
         logger.info("[CLEANUP] Iniciando tarea de limpieza automática (ejecución cada 1 hora)")
         
         # Esperar 5 minutos antes de la primera limpieza (dar tiempo al worker a iniciar)
@@ -236,12 +264,21 @@ if __name__ == "__main__":
         while True:
             try:
                 logger.info("[CLEANUP] Ejecutando limpieza programada...")
-                stats = cleanup_old_files()
+                
+                # Limpiar resultados procesados
+                results_stats = cleanup_old_files()
                 logger.info(
-                    f"[CLEANUP] Limpieza completada - "
-                    f"Archivos eliminados: {stats['files_deleted']}, "
-                    f"Espacio liberado: {stats['space_freed_mb']} MB"
+                    f"[CLEANUP_RESULTS] Archivos eliminados: {results_stats['files_deleted']}, "
+                    f"Espacio liberado: {results_stats['space_freed_mb']} MB"
                 )
+                
+                # Limpiar uploads antiguos
+                uploads_stats = cleanup_old_uploads()
+                logger.info(
+                    f"[CLEANUP_UPLOADS] Archivos eliminados: {uploads_stats['files_deleted']}, "
+                    f"Espacio liberado: {uploads_stats['space_freed_mb']} MB"
+                )
+                
             except Exception as e:
                 logger.error(f"[CLEANUP] Error en tarea de limpieza: {str(e)}")
             

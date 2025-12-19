@@ -48,7 +48,8 @@ class QueueService:
         original_filename: str,
         file_size_mb: float,
         parameters: Dict[str, Any],
-        priority: int = PRIORITY_NORMAL
+        priority: int = PRIORITY_NORMAL,
+        upload_id: str = None  # NUEVO: ID del upload origen
     ) -> str:
         """
         Crea un nuevo job y lo agrega a la cola con prioridad.
@@ -76,6 +77,7 @@ class QueueService:
             "completed_at": None,
             "progress": 0,
             "input_file": input_file,
+            "upload_id": upload_id,  # NUEVO
             "output_file": None,
             "result_url": None,
             "error": None,
@@ -88,6 +90,13 @@ class QueueService:
         
         # Guardar job en Valkey
         self.redis.set(f"job:{job_id}", json.dumps(job_data))
+        
+        # Si tiene upload_id, incrementar referencias
+        if upload_id:
+            from .upload_svc import UploadService
+            upload_service = UploadService()
+            upload_service.increment_ref(upload_id)
+            logger.info(f"[QUEUE] Incrementada referencia para upload: {upload_id}")
         
         # Agregar a índice de pendientes con timestamp
         self.redis.zadd("pending_jobs", {job_id: datetime.utcnow().timestamp()})

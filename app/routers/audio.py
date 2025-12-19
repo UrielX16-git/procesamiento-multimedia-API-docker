@@ -1,52 +1,33 @@
 """
 Router para endpoints relacionados con procesamiento de audio.
 """
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 from typing import List
-import shutil
 import os
 import uuid
 import logging
 from ..services import ffmpeg_svc
+from ..services.queue_svc import QueueService
 
 router = APIRouter(prefix="/audio", tags=["Audio"])
 logger = logging.getLogger(__name__)
 
-TEMP_DIR = "/tmp_media"
-os.makedirs(TEMP_DIR, exist_ok=True)
+UPLOADS_DIR = "/disk/uploads"
+os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-
-def save_upload(file: UploadFile) -> str:
-    """Guarda un archivo subido con nombre único."""
-    filename = f"{uuid.uuid4()}_{file.filename}"
-    filepath = os.path.join(TEMP_DIR, filename)
-    with open(filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return filepath
-
-
-def cleanup_file(filepath: str):
-    """Elimina un archivo si existe."""
-    if os.path.exists(filepath):
-        os.remove(filepath)
-
-
-def cleanup_files(filepaths: List[str]):
-    """Elimina múltiples archivos."""
-    for filepath in filepaths:
-        cleanup_file(filepath)
+# Instancia del servicio de cola
+queue = QueueService()
 
 
 @router.post("/cortar")
 async def cut_audio(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     inicio: str = Form(..., description="Tiempo de inicio (HH:MM:SS)"),
     fin: str = Form(..., description="Tiempo de fin (HH:MM:SS)")
 ):
     """
-    Recorta un archivo de audio entre dos timestamps.
+    Recorta un archivo de audio entre dos timestamps (ASÍNCRONO).
     
     Args:
         file: Archivo de audio a recortar
@@ -54,84 +35,108 @@ async def cut_audio(
         fin: Tiempo de fin en formato HH:MM:SS
     
     Returns:
-        Archivo de audio recortado
+        JSON con job_id para consultar estado y descargar audio recortado
     """
-    logger.info(f"[ENDPOINT] POST /audio/cortar - Recibida solicitud, archivo: {file.filename}, inicio: {inicio}, fin: {fin}")
-    input_path = save_upload(file)
-    output_filename = f"cut_{uuid.uuid4()}.mp3"
-    output_path = os.path.join(TEMP_DIR, output_filename)
+    logger.info(f"[ENDPOINT] POST /audio/cortar - Archivo: {file.filename}, inicio: {inicio}, fin: {fin}")
     
-    try:
-        ffmpeg_svc.cut_audio(input_path, output_path, inicio, fin)
-        
-        # Limpiar archivos después de enviar la respuesta
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
-        
-        return FileResponse(
-            output_path,
-            media_type="audio/mpeg",
-            filename=f"cut_{file.filename}"
-        )
-    except Exception as e:
-        logger.error(f"[ENDPOINT] Error al cortar audio: {str(e)}")
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error al cortar audio: {str(e)}"}
-        )
+    # Guardar archivo y calcular tamaño
+    file_size_mb = 0
+    upload_path = os.path.join(UPLOADS_DIR, f"{uuid.uuid4()}_{file.filename}")
+    
+    with open(upload_path, "wb") as buffer:
+        chunk_size = 8 * 1024 * 1024  # 8MB chunks
+        while chunk := await file.read(chunk_size):
+            buffer.write(chunk)
+            file_size_mb += len(chunk) / (1024 * 1024)
+    
+    logger.info(f"[ENDPOINT] Archivo guardado: {file_size_mb:.2f} MB")
+    
+    # Crear job con PRIORIDAD NORMAL
+    job_id = queue.create_job(
+        job_type="cut_audio",
+        input_file=upload_path,
+        original_filename=file.filename,
+        file_size_mb=file_size_mb,
+        parameters={"start_time": inicio, "end_time": fin},
+        priority=QueueService.PRIORITY_NORMAL
+    )
+    
+    logger.info(f"[ENDPOINT] Job creado: {job_id} - Prioridad NORMAL")
+    
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job agregado a la cola con prioridad NORMAL",
+        "status_url": f"/jobs/status/{job_id}",
+        "download_url": f"/jobs/download/{job_id}",
+        "file_size_mb": round(file_size_mb, 2),
+        "priority": "normal",
+        "estimated_time": "1-10 segundos una vez iniciado el procesamiento"
+    })
 
 
 @router.post("/unir")
 async def join_audios(
-    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(..., description="Lista de archivos de audio a unir")
 ):
     """
-    Une múltiples archivos de audio en uno solo.
+    Une múltiples archivos de audio en uno solo (ASÍNCRONO).
     
     Args:
         files: Lista de archivos de audio (mínimo 2)
     
     Returns:
-        Archivo de audio con todos los archivos concatenados
+        JSON con job_id para consultar estado y descargar audio concatenado
     """
-    logger.info(f"[ENDPOINT] POST /audio/unir - Recibida solicitud, numero de archivos: {len(files)}")
+    logger.info(f"[ENDPOINT] POST /audio/unir - Número de archivos: {len(files)}")
+    
     if len(files) < 2:
-        logger.warning(f"[ENDPOINT] Se requieren minimo 2 archivos, recibidos: {len(files)}")
+        logger.warning(f"[ENDPOINT] Se requieren mínimo 2 archivos, recibidos: {len(files)}")
         return JSONResponse(
             status_code=400,
             content={"error": "Se requieren al menos 2 archivos para unir"}
         )
     
+    # Guardar todos los archivos y calcular tamaño total
     input_paths = []
-    output_filename = f"merged_{uuid.uuid4()}.mp3"
-    output_path = os.path.join(TEMP_DIR, output_filename)
+    total_size_mb = 0
     
-    try:
-        # Guardar todos los archivos subidos
-        for i, file in enumerate(files, 1):
-            logger.info(f"[ENDPOINT] Guardando archivo {i}/{len(files)}: {file.filename}")
-            input_paths.append(save_upload(file))
+    for i, file in enumerate(files, 1):
+        logger.info(f"[ENDPOINT] Guardando archivo {i}/{len(files)}: {file.filename}")
+        file_path = os.path.join(UPLOADS_DIR, f"{uuid.uuid4()}_{file.filename}")
         
-        # Concatenar audios
-        ffmpeg_svc.concat_audios(input_paths, output_path)
+        file_size_mb = 0
+        with open(file_path, "wb") as buffer:
+            chunk_size = 8 * 1024 * 1024  # 8MB chunks
+            while chunk := await file.read(chunk_size):
+                buffer.write(chunk)
+                file_size_mb += len(chunk) / (1024 * 1024)
         
-        # Limpiar archivos después de enviar la respuesta
-        background_tasks.add_task(cleanup_files, input_paths)
-        background_tasks.add_task(cleanup_file, output_path)
-        
-        return FileResponse(
-            output_path,
-            media_type="audio/mpeg",
-            filename="merged_audio.mp3"
-        )
-    except Exception as e:
-        logger.error(f"[ENDPOINT] Error al unir audios: {str(e)}")
-        background_tasks.add_task(cleanup_files, input_paths)
-        background_tasks.add_task(cleanup_file, output_path)
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error al unir audios: {str(e)}"}
-        )
+        input_paths.append(file_path)
+        total_size_mb += file_size_mb
+    
+    logger.info(f"[ENDPOINT] Archivos guardados: {total_size_mb:.2f} MB total")
+    
+    # Crear job con PRIORIDAD NORMAL
+    job_id = queue.create_job(
+        job_type="concat_audios",
+        input_file=input_paths[0],  # Primer archivo como referencia
+        original_filename=f"merged_{len(files)}_audios.mp3",
+        file_size_mb=total_size_mb,
+        parameters={"input_files": input_paths},
+        priority=QueueService.PRIORITY_NORMAL
+    )
+    
+    logger.info(f"[ENDPOINT] Job creado: {job_id} - Prioridad NORMAL")
+    
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job agregado a la cola con prioridad NORMAL",
+        "status_url": f"/jobs/status/{job_id}",
+        "download_url": f"/jobs/download/{job_id}",
+        "file_size_mb": round(total_size_mb, 2),
+        "files_count": len(files),
+        "priority": "normal",
+        "estimated_time": "5-30 segundos una vez iniciado el procesamiento"
+    })

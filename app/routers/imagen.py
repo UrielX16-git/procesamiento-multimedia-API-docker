@@ -1,45 +1,32 @@
 """
 Router para endpoints relacionados con procesamiento de imágenes.
 """
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
-import shutil
+from fastapi import APIRouter, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 import os
 import uuid
 import logging
 from ..services import ffmpeg_svc
+from ..services.queue_svc import QueueService
 
 router = APIRouter(prefix="/imagen", tags=["Imagen"])
 logger = logging.getLogger(__name__)
 
-TEMP_DIR = "/tmp_media"
-os.makedirs(TEMP_DIR, exist_ok=True)
+UPLOADS_DIR = "/disk/uploads"
+os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-
-def save_upload(file: UploadFile) -> str:
-    """Guarda un archivo subido con nombre único."""
-    filename = f"{uuid.uuid4()}_{file.filename}"
-    filepath = os.path.join(TEMP_DIR, filename)
-    with open(filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    return filepath
-
-
-def cleanup_file(filepath: str):
-    """Elimina un archivo si existe."""
-    if os.path.exists(filepath):
-        os.remove(filepath)
+# Instancia del servicio de cola
+queue = QueueService()
 
 
 @router.post("/captura")
 async def capture_frame(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     tiempo: str = Form(..., description="Tiempo del frame en formato HH:MM:SS"),
     calidad: int = Form(85, description="Calidad WebP (0-100, default: 85)")
 ):
     """
-    Captura un frame de un video en un tiempo específico.
+    Captura un frame de un video en un tiempo específico (ASÍNCRONO).
     
     Args:
         file: Archivo de video
@@ -47,29 +34,41 @@ async def capture_frame(
         calidad: Calidad de compresión WebP (0-100, mayor = mejor calidad)
     
     Returns:
-        Imagen WebP del frame capturado (optimizada, ~70% menos peso que PNG)
+        JSON con job_id para consultar estado y descargar imagen WebP
     """
-    logger.info(f"[ENDPOINT] POST /imagen/captura - Recibida solicitud, archivo: {file.filename}, tiempo: {tiempo}, calidad: {calidad}")
-    input_path = save_upload(file)
-    output_filename = f"frame_{uuid.uuid4()}.webp"
-    output_path = os.path.join(TEMP_DIR, output_filename)
+    logger.info(f"[ENDPOINT] POST /imagen/captura - Archivo: {file.filename}, tiempo: {tiempo}, calidad: {calidad}")
     
-    try:
-        ffmpeg_svc.capture_frame(input_path, output_path, tiempo, calidad)
-        
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
-        
-        return FileResponse(
-            output_path,
-            media_type="image/webp",
-            filename=f"frame_{tiempo.replace(':', '-')}.webp"
-        )
-    except Exception as e:
-        logger.error(f"[ENDPOINT] Error al capturar frame: {str(e)}")
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error al capturar frame: {str(e)}"}
-        )
+    # Guardar archivo y calcular tamaño
+    file_size_mb = 0
+    upload_path = os.path.join(UPLOADS_DIR, f"{uuid.uuid4()}_{file.filename}")
+    
+    with open(upload_path, "wb") as buffer:
+        chunk_size = 8 * 1024 * 1024  # 8MB chunks
+        while chunk := await file.read(chunk_size):
+            buffer.write(chunk)
+            file_size_mb += len(chunk) / (1024 * 1024)
+    
+    logger.info(f"[ENDPOINT] Archivo guardado: {file_size_mb:.2f} MB")
+    
+    # Crear job con PRIORIDAD ALTA (operación rápida)
+    job_id = queue.create_job(
+        job_type="capture_frame",
+        input_file=upload_path,
+        original_filename=file.filename,
+        file_size_mb=file_size_mb,
+        parameters={"timestamp": tiempo, "quality": calidad},
+        priority=QueueService.PRIORITY_HIGH  # Prioridad ALTA
+    )
+    
+    logger.info(f"[ENDPOINT] Job creado: {job_id} - Prioridad ALTA")
+    
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job agregado a la cola con prioridad ALTA",
+        "status_url": f"/jobs/status/{job_id}",
+        "download_url": f"/jobs/download/{job_id}",
+        "file_size_mb": round(file_size_mb, 2),
+        "priority": "high",
+        "estimated_time": "1-2 segundos una vez iniciado el procesamiento"
+    })

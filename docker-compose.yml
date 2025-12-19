@@ -1,11 +1,11 @@
 services:
-  # Servicio Valkey (fork de Redis) para gestión de cola
+  # Servicio Valkey
   valkey:
     image: valkey/valkey:7-alpine
     container_name: multimedia-valkey
     restart: unless-stopped
     volumes:
-      - valkey_data:/data
+      - ./data/valkey:/data
     command: valkey-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: [ "CMD", "valkey-cli", "ping" ]
@@ -65,6 +65,3 @@ services:
           cpus: '6.0'
           memory: 6G
     command: python -m app.services.worker_svc
-
-volumes:
-  valkey_data:

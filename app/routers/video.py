@@ -41,92 +41,15 @@ def cleanup_file(filepath: str):
 
 @router.post("/detalles")
 async def video_details(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
 ):
     """
-    Extrae metadatos de un archivo de video.
+    Extrae metadatos de un archivo de video de forma ASÍNCRONA.
     
     Returns:
-        JSON con información detallada del video (formato, streams, duración, etc.)
+        JSON con job_id para consultar estado y descargar metadatos
     """
-    logger.info(f"[ENDPOINT] POST /video/detalles - Recibida solicitud, archivo: {file.filename}")
-    filepath = save_upload(file)
-    
-    try:
-        metadata = ffmpeg_svc.get_video_metadata(filepath)
-        background_tasks.add_task(cleanup_file, filepath)
-        return metadata
-    except Exception as e:
-        logger.error(f"[ENDPOINT] Error al procesar video: {str(e)}")
-        background_tasks.add_task(cleanup_file, filepath)
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error al procesar video: {str(e)}"}
-        )
-
-
-@router.post("/extraer-audio")
-async def extract_audio(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
-):
-    """
-    Extrae el audio de un video y lo convierte a MP3.
-    
-    Returns:
-        Archivo MP3 con el audio extraído
-    """
-    logger.info(f"[ENDPOINT] POST /video/extraer-audio - Recibida solicitud, archivo: {file.filename}")
-    input_path = save_upload(file)
-    output_filename = f"audio_{uuid.uuid4()}.mp3"
-    output_path = os.path.join(TEMP_DIR, output_filename)
-    
-    try:
-        ffmpeg_svc.extract_audio_from_video(input_path, output_path)
-        
-        # Limpiar archivos después de enviar la respuesta
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
-        
-        return FileResponse(
-            output_path,
-            media_type="audio/mpeg",
-            filename=f"audio_{file.filename.rsplit('.', 1)[0]}.mp3"
-        )
-    except Exception as e:
-        logger.error(f"[ENDPOINT] Error al extraer audio: {str(e)}")
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error al extraer audio: {str(e)}"}
-        )
-
-
-@router.post("/comprimir")
-async def compress_video(
-    file: UploadFile = File(...),
-    max_threads: int = Form(4),
-    use_queue: bool = Form(True)
-):
-    """
-    Comprime un video para reducir su tamaño de forma optimizada.
-    
-    NUEVO: Usa cola de procesamiento para evitar sobrecarga.
-    - Archivos >100MB van automáticamente a la cola
-    - Prioridad BAJA (operación pesada)
-    
-    Args:
-        file: Archivo de video a comprimir
-        max_threads: Número máximo de threads (default: 4, 0=auto detectar todos los hilos)
-        use_queue: Si True, usa cola de procesamiento (default: True)
-    
-    Returns:
-        Si usa cola: JSON con job_id y status_url
-        Si es directo: Archivo de video comprimido
-    """
-    logger.info(f"[ENDPOINT] POST /video/comprimir - Archivo: {file.filename}, max_threads: {max_threads}, use_queue: {use_queue}")
+    logger.info(f"[ENDPOINT] POST /video/detalles - Archivo: {file.filename}")
     
     # Guardar archivo y calcular tamaño
     file_size_mb = 0
@@ -140,72 +63,142 @@ async def compress_video(
     
     logger.info(f"[ENDPOINT] Archivo guardado: {file_size_mb:.2f} MB")
     
-    # Si es pesado o se fuerza cola, usar sistema de cola
-    if use_queue or file_size_mb > 100:  # >100MB a cola automáticamente
-        job_id = queue.create_job(
-            job_type="compress_video",
-            input_file=upload_path,
-            original_filename=file.filename,
-            file_size_mb=file_size_mb,
-            parameters={"max_threads": max_threads},
-            priority=QueueService.PRIORITY_LOW  # Prioridad BAJA
-        )
-        
-        logger.info(f"[ENDPOINT] Job creado: {job_id} - Agregado a cola con prioridad BAJA")
-        
-        return JSONResponse({
-            "job_id": job_id,
-            "status": "pending",
-            "message": "Job agregado a la cola de procesamiento",
-            "status_url": f"/jobs/status/{job_id}",
-            "download_url": f"/jobs/download/{job_id}",
-            "file_size_mb": round(file_size_mb, 2),
-            "priority": "low",
-            "queue_info": "El job se procesará cuando sea su turno según prioridad"
-        })
+    # Crear job con PRIORIDAD ALTA (operación rápida)
+    job_id = queue.create_job(
+        job_type="get_metadata",
+        input_file=upload_path,
+        original_filename=file.filename,
+        file_size_mb=file_size_mb,
+        parameters={},
+        priority=QueueService.PRIORITY_HIGH  # Prioridad ALTA
+    )
     
-    # Archivos pequeños: procesamiento directo (comportamiento legacy)
-    logger.info(f"[ENDPOINT] Procesamiento directo (archivo pequeño: {file_size_mb:.2f}MB)")
-    input_path = upload_path
-    output_filename = f"compressed_{uuid.uuid4()}.mp4"
-    output_path = os.path.join(TEMP_DIR, output_filename)
+    logger.info(f"[ENDPOINT] Job creado: {job_id} - Prioridad ALTA")
     
-    try:
-        ffmpeg_svc.compress_video(input_path, output_path, max_threads=max_threads)
-        
-        # Limpiar archivo de entrada
-        if os.path.exists(input_path):
-            os.remove(input_path)
-        
-        # Retornar archivo (se limpiará después por el caller)
-        return FileResponse(
-            output_path,
-            media_type="video/mp4",
-            filename=f"compressed_{file.filename}",
-            background=BackgroundTasks().add_task(cleanup_file, output_path)
-        )
-    except Exception as e:
-        logger.error(f"[ENDPOINT] Error al comprimir video: {str(e)}")
-        cleanup_file(input_path)
-        cleanup_file(output_path)
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error al comprimir video: {str(e)}"}
-        )
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job agregado a la cola con prioridad ALTA",
+        "status_url": f"/jobs/status/{job_id}",
+        "download_url": f"/jobs/download/{job_id}",
+        "file_size_mb": round(file_size_mb, 2),
+        "priority": "high",
+        "estimated_time": "2-5 segundos una vez iniciado el procesamiento"
+    })
+
+
+@router.post("/extraer-audio")
+async def extract_audio(
+    file: UploadFile = File(...)
+):
+    """
+    Extrae el audio de un video y lo convierte a MP3 de forma ASÍNCRONA.
+    
+    Returns:
+        JSON con job_id para consultar estado y descargar audio MP3
+    """
+    logger.info(f"[ENDPOINT] POST /video/extraer-audio - Archivo: {file.filename}")
+    
+    # Guardar archivo y calcular tamaño
+    file_size_mb = 0
+    upload_path = os.path.join(UPLOADS_DIR, f"{uuid.uuid4()}_{file.filename}")
+    
+    with open(upload_path, "wb") as buffer:
+        chunk_size = 8 * 1024 * 1024  # 8MB chunks
+        while chunk := await file.read(chunk_size):
+            buffer.write(chunk)
+            file_size_mb += len(chunk) / (1024 * 1024)
+    
+    logger.info(f"[ENDPOINT] Archivo guardado: {file_size_mb:.2f} MB")
+    
+    # Crear job con PRIORIDAD NORMAL
+    job_id = queue.create_job(
+        job_type="extract_audio",
+        input_file=upload_path,
+        original_filename=file.filename,
+        file_size_mb=file_size_mb,
+        parameters={"quality": 2},
+        priority=QueueService.PRIORITY_NORMAL  # Prioridad NORMAL
+    )
+    
+    logger.info(f"[ENDPOINT] Job creado: {job_id} - Prioridad NORMAL")
+    
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job agregado a la cola con prioridad NORMAL",
+        "status_url": f"/jobs/status/{job_id}",
+        "download_url": f"/jobs/download/{job_id}",
+        "file_size_mb": round(file_size_mb, 2),
+        "priority": "normal",
+        "estimated_time": "10-60 segundos una vez iniciado el procesamiento"
+    })
+
+
+@router.post("/comprimir")
+async def compress_video(
+    file: UploadFile = File(...),
+    max_threads: int = Form(4)
+):
+    """
+    Comprime un video para reducir su tamaño de forma optimizada (ASÍNCRONO).
+    
+    Todos los archivos van a la cola con PRIORIDAD BAJA (operación pesada).
+    
+    Args:
+        file: Archivo de video a comprimir
+        max_threads: Número máximo de threads (default: 4, 0=auto detectar todos los hilos)
+    
+    Returns:
+        JSON con job_id para consultar estado y descargar video comprimido
+    """
+    logger.info(f"[ENDPOINT] POST /video/comprimir - Archivo: {file.filename}, max_threads: {max_threads}")
+    
+    # Guardar archivo y calcular tamaño
+    file_size_mb = 0
+    upload_path = os.path.join(UPLOADS_DIR, f"{uuid.uuid4()}_{file.filename}")
+    
+    with open(upload_path, "wb") as buffer:
+        chunk_size = 8 * 1024 * 1024  # 8MB chunks
+        while chunk := await file.read(chunk_size):
+            buffer.write(chunk)
+            file_size_mb += len(chunk) / (1024 * 1024)
+    
+    logger.info(f"[ENDPOINT] Archivo guardado: {file_size_mb:.2f} MB")
+    
+    # SIEMPRE usar cola con PRIORIDAD BAJA
+    job_id = queue.create_job(
+        job_type="compress_video",
+        input_file=upload_path,
+        original_filename=file.filename,
+        file_size_mb=file_size_mb,
+        parameters={"max_threads": max_threads},
+        priority=QueueService.PRIORITY_LOW  # Prioridad BAJA
+    )
+    
+    logger.info(f"[ENDPOINT] Job creado: {job_id} - Prioridad BAJA")
+    
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job agregado a la cola con prioridad BAJA",
+        "status_url": f"/jobs/status/{job_id}",
+        "download_url": f"/jobs/download/{job_id}",
+        "file_size_mb": round(file_size_mb, 2),
+        "priority": "low",
+        "estimated_time": "1-30 minutos dependiendo del tamaño"
+    })
 
 
 @router.post("/convertir-mp4")
 async def convert_to_mp4(
     file: UploadFile = File(...),
-    max_threads: int = Form(4),
-    use_queue: bool = Form(True)
+    max_threads: int = Form(4)
 ):
     """
-    Convierte un video de cualquier formato a MP4 de forma ultra-optimizada.
+    Convierte un video de cualquier formato a MP4 de forma ultra-optimizada (ASÍNCRONO).
     
-    NUEVO: Usa cola de procesamiento para evitar sobrecarga.
-    - Archivos >100MB van automáticamente a la cola
-    - Prioridad BAJA (operación pesada)
+    Todos los archivos van a la cola con PRIORIDAD BAJA (operación pesada).
     
     ESTRATEGIA INTELIGENTE:
     - MKV/WEBM: Stream copy directo (INSTANTÁNEO - segundos) sin subtítulos
@@ -214,13 +207,11 @@ async def convert_to_mp4(
     Args:
         file: Archivo de video a convertir
         max_threads: Número máximo de threads (default: 4, 0=auto detectar todos los hilos)
-        use_queue: Si True, usa cola de procesamiento (default: True)
     
     Returns:
-        Si usa cola: JSON con job_id y status_url
-        Si es directo: Archivo de video en formato MP4
+        JSON con job_id para consultar estado y descargar video MP4
     """
-    logger.info(f"[ENDPOINT] POST /video/convertir-mp4 - Archivo: {file.filename}, max_threads: {max_threads}, use_queue: {use_queue}")
+    logger.info(f"[ENDPOINT] POST /video/convertir-mp4 - Archivo: {file.filename}, max_threads: {max_threads}")
     
     # Guardar archivo y calcular tamaño
     file_size_mb = 0
@@ -234,57 +225,26 @@ async def convert_to_mp4(
     
     logger.info(f"[ENDPOINT] Archivo guardado: {file_size_mb:.2f} MB")
     
-    # Si es pesado o se fuerza cola, usar sistema de cola
-    if use_queue or file_size_mb > 100:  # >100MB a cola automáticamente
-        job_id = queue.create_job(
-            job_type="convert_mp4",
-            input_file=upload_path,
-            original_filename=file.filename,
-            file_size_mb=file_size_mb,
-            parameters={"max_threads": max_threads},
-            priority=QueueService.PRIORITY_LOW  # Prioridad BAJA
-        )
-        
-        logger.info(f"[ENDPOINT] Job creado: {job_id} - Agregado a cola con prioridad BAJA")
-        
-        return JSONResponse({
-            "job_id": job_id,
-            "status": "pending",
-            "message": "Job agregado a la cola de procesamiento",
-            "status_url": f"/jobs/status/{job_id}",
-            "download_url": f"/jobs/download/{job_id}",
-            "file_size_mb": round(file_size_mb, 2),
-            "priority": "low",
-            "queue_info": "El job se procesará cuando sea su turno según prioridad"
-        })
+    # SIEMPRE usar cola con PRIORIDAD BAJA
+    job_id = queue.create_job(
+        job_type="convert_mp4",
+        input_file=upload_path,
+        original_filename=file.filename,
+        file_size_mb=file_size_mb,
+        parameters={"max_threads": max_threads},
+        priority=QueueService.PRIORITY_LOW  # Prioridad BAJA
+    )
     
-    # Archivos pequeños: procesamiento directo (comportamiento legacy)
-    logger.info(f"[ENDPOINT] Procesamiento directo (archivo pequeño: {file_size_mb:.2f}MB)")
-    input_path = upload_path
-    base_filename = file.filename.rsplit('.', 1)[0] if '.' in file.filename else file.filename
-    output_filename = f"converted_{uuid.uuid4()}.mp4"
-    output_path = os.path.join(TEMP_DIR, output_filename)
+    logger.info(f"[ENDPOINT] Job creado: {job_id} - Prioridad BAJA")
     
-    try:
-        ffmpeg_svc.convert_to_mp4(input_path, output_path, max_threads=max_threads)
-        
-        # Limpiar archivo de entrada
-        if os.path.exists(input_path):
-            os.remove(input_path)
-        
-        # Retornar archivo (se limpiará después por el caller)
-        return FileResponse(
-            output_path,
-            media_type="video/mp4",
-            filename=f"{base_filename}.mp4",
-            background=BackgroundTasks().add_task(cleanup_file, output_path)
-        )
-    except Exception as e:
-        logger.error(f"[ENDPOINT] Error al convertir video: {str(e)}")
-        cleanup_file(input_path)
-        cleanup_file(output_path)
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Error al convertir video: {str(e)}"}
-        )
+    return JSONResponse({
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job agregado a la cola con prioridad BAJA",
+        "status_url": f"/jobs/status/{job_id}",
+        "download_url": f"/jobs/download/{job_id}",
+        "file_size_mb": round(file_size_mb, 2),
+        "priority": "low",
+        "estimated_time": "30 segundos - 10 minutos dependiendo del formato y tamaño"
+    })
 
