@@ -169,19 +169,32 @@ class Worker:
             logger.info("=" * 80)
             
         except subprocess.CalledProcessError as e:
-            # Capturar error específico de FFmpeg con su stderr
-            error_output = e.stderr if e.stderr else str(e)
+            # Capturar error específico de FFmpeg
+            # IMPORTANTE: Decodificar bytes si es necesario
+            stderr_content = e.stderr
+            if isinstance(stderr_content, bytes):
+                try:
+                    stderr_content = stderr_content.decode('utf-8', errors='replace')
+                except:
+                    stderr_content = str(stderr_content)
+            
+            error_output = stderr_content if stderr_content else str(e)
+            
+            # Guardar los ÚLTIMOS 2000 caracteres (donde suele estar el error real, después del banner)
+            if len(error_output) > 2000:
+                error_output = "..." + error_output[-2000:]
+                
             error_msg = f"FFmpeg Error (Exit {e.returncode}): {error_output}"
             
             logger.error("=" * 80)
             logger.error(f"[WORKER] Error de FFmpeg en job {job_id}:")
-            logger.error(error_msg)
+            logger.error(error_msg[-300:]) # Loguear solo el final en consola
             logger.error("=" * 80)
             
             self.queue.update_job_status(
                 job_id, 
                 "failed",
-                error=error_msg[:1000]  # Limitar longitud para no saturar DB
+                error=error_msg
             )
             
             # Decrementar referencia del upload
