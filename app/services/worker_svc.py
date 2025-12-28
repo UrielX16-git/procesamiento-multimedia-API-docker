@@ -7,6 +7,7 @@ import logging
 import signal
 import sys
 import os
+import subprocess
 from .queue_svc import QueueService
 from . import ffmpeg_svc
 
@@ -167,9 +168,31 @@ class Worker:
             logger.info(f"[WORKER] Job completado exitosamente: {job_id}")
             logger.info("=" * 80)
             
+        except subprocess.CalledProcessError as e:
+            # Capturar error específico de FFmpeg con su stderr
+            error_output = e.stderr if e.stderr else str(e)
+            error_msg = f"FFmpeg Error (Exit {e.returncode}): {error_output}"
+            
+            logger.error("=" * 80)
+            logger.error(f"[WORKER] Error de FFmpeg en job {job_id}:")
+            logger.error(error_msg)
+            logger.error("=" * 80)
+            
+            self.queue.update_job_status(
+                job_id, 
+                "failed",
+                error=error_msg[:1000]  # Limitar longitud para no saturar DB
+            )
+            
+            # Decrementar referencia del upload
+            if job_data and job_data.get("upload_id"):
+                from .upload_svc import UploadService
+                upload_service = UploadService()
+                upload_service.decrement_ref(job_data["upload_id"], auto_delete=False)
+            
         except Exception as e:
             logger.error("=" * 80)
-            logger.error(f"[WORKER] Error procesando job {job_id}: {str(e)}")
+            logger.error(f"[WORKER] Error genérico procesando job {job_id}: {str(e)}")
             logger.error("=" * 80)
             
             self.queue.update_job_status(
