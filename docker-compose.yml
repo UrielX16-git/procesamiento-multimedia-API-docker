@@ -28,6 +28,7 @@ services:
       - VALKEY_PORT=6379
     volumes:
       - ./data/uploads:/disk/uploads
+      - ./data/upload_local:/disk/upload_local
       - ./data/results:/disk/results
       - ./data/temp:/disk/temp
     restart: unless-stopped
@@ -56,6 +57,7 @@ services:
       - VALKEY_PORT=6379
     volumes:
       - ./data/uploads:/disk/uploads
+      - ./data/upload_local:/disk/upload_local
       - ./data/results:/disk/results
       - ./data/temp:/disk/temp
     restart: unless-stopped

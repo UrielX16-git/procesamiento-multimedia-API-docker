@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 class UploadService:
     """Servicio para gestionar uploads con conteo de referencias."""
     
-    # TTL de 3 horas para uploads sin usar
-    UPLOAD_TTL_UNUSED = 10800  # 3 horas en segundos
+    # TTL de 6 horas para uploads sin usar
+    UPLOAD_TTL_UNUSED = 21600  # 6 horas en segundos
     
     def __init__(self, host: str = None, port: int = 6379, db: int = 0):
         """
@@ -82,7 +82,7 @@ class UploadService:
         
         logger.info(
             f"[UPLOAD] Creado: {upload_id} - {filename} ({file_size_mb:.2f}MB) "
-            f"- TTL: 3 horas"
+            f"- TTL: 6 horas"
         )
         return upload_id
     
@@ -214,3 +214,24 @@ class UploadService:
         
         self._delete_upload(upload_id, upload_data)
         return True
+    
+    def delete_upload_from_cleanup(self, upload_id: str):
+        """
+        Elimina un upload desde el servicio de limpieza.
+        Este método NO verifica ref_count porque se usa cuando el archivo
+        físico ya fue eliminado por antigüedad.
+        
+        Args:
+            upload_id: ID del upload
+        """
+        upload_data = self.get_upload(upload_id)
+        if not upload_data:
+            logger.debug(f"[UPLOAD] Upload {upload_id} ya no existe en Valkey")
+            return
+        
+        # Eliminar solo los registros de Valkey (archivo ya fue eliminado)
+        self.redis.delete(f"upload:{upload_id}")
+        self.redis.zrem("uploads", upload_id)
+        
+        logger.info(f"[UPLOAD] Registro eliminado por cleanup: {upload_id}")
+

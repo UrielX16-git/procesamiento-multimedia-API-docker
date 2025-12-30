@@ -5,6 +5,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 import os
 import uuid
+import shutil
 import logging
 from ..services.upload_svc import UploadService
 
@@ -12,7 +13,10 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 logger = logging.getLogger(__name__)
 
 UPLOADS_DIR = "/disk/uploads"
+LOCAL_UPLOADS_DIR = "/disk/upload_local"
+
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(LOCAL_UPLOADS_DIR, exist_ok=True)
 
 # Instancia del servicio de uploads
 upload_svc = UploadService()
@@ -59,6 +63,76 @@ async def upload_file(file: UploadFile = File(...)):
         "message": "Archivo subido exitosamente. Usa este upload_id para crear jobs",
         "create_job_url": "/jobs/create"
     })
+
+
+@router.post("/local")
+async def upload_local_file(filename: str):
+    """
+    Procesa un archivo desde el directorio local /disk/upload_local.
+    El archivo se mueve a /disk/uploads y se registra como un upload normal.
+    
+    Args:
+        filename: Nombre del archivo en /disk/upload_local
+        
+    Returns:
+        JSON con upload_id y información del archivo
+    """
+    logger.info(f"[ENDPOINT] POST /upload/local - Procesando archivo local: {filename}")
+    
+    # Validar que el archivo existe
+    local_file_path = os.path.join(LOCAL_UPLOADS_DIR, filename)
+    if not os.path.exists(local_file_path):
+        logger.error(f"[ENDPOINT] Archivo no encontrado: {local_file_path}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Archivo '{filename}' no encontrado en {LOCAL_UPLOADS_DIR}"
+        )
+    
+    if not os.path.isfile(local_file_path):
+        logger.error(f"[ENDPOINT] La ruta no es un archivo: {local_file_path}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{filename}' no es un archivo válido"
+        )
+    
+    # Generar upload_id
+    upload_id = str(uuid.uuid4())
+    destination_path = os.path.join(UPLOADS_DIR, f"{upload_id}_{filename}")
+    
+    try:
+        # Obtener tamaño del archivo antes de moverlo
+        file_size_bytes = os.path.getsize(local_file_path)
+        file_size_mb = file_size_bytes / (1024 * 1024)
+        
+        # Mover archivo de local a uploads
+        shutil.move(local_file_path, destination_path)
+        
+        logger.info(
+            f"[ENDPOINT] Archivo movido: {local_file_path} -> {destination_path} "
+            f"({file_size_mb:.2f} MB)"
+        )
+        
+        # Crear registro de upload
+        upload_svc.create_upload(filename, destination_path, file_size_mb, upload_id=upload_id)
+        
+        logger.info(f"[ENDPOINT] Upload local creado: {upload_id}")
+        
+        return JSONResponse({
+            "upload_id": upload_id,
+            "filename": filename,
+            "file_size_mb": round(file_size_mb, 2),
+            "status": "ready",
+            "source": "local",
+            "message": "Archivo procesado exitosamente desde directorio local",
+            "create_job_url": "/jobs/create"
+        })
+    
+    except Exception as e:
+        logger.error(f"[ENDPOINT] Error procesando archivo local: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al procesar archivo: {str(e)}"
+        )
 
 
 @router.get("/{upload_id}")

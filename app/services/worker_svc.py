@@ -107,7 +107,6 @@ class Worker:
                 )
             
             elif job_type == "concat_audios":
-                # Para concat, input_file es una lista
                 ffmpeg_svc.concat_audios(
                     input_paths=params.get("input_files", [input_file]),
                     output_path=output_file
@@ -122,11 +121,9 @@ class Worker:
                 )
             
             elif job_type == "get_metadata":
-                # Obtener metadatos del video
                 import json
                 metadata = ffmpeg_svc.get_video_metadata(input_file)
                 
-                # Guardar como JSON
                 with open(output_file, 'w', encoding='utf-8') as f:
                     json.dump(metadata, f, indent=2, ensure_ascii=False)
                 
@@ -150,12 +147,11 @@ class Worker:
                 output_file=output_file
             )
             
-            # Decrementar referencia del upload (solo tracking, NO elimina)
             if job_data.get("upload_id"):
                 from .upload_svc import UploadService
                 upload_service = UploadService()
                 upload_service.decrement_ref(job_data["upload_id"], auto_delete=False)
-                logger.info(f"[WORKER] Referencia decrementada para upload: {job_data['upload_id']} (limpieza delegada a cleanup)")
+                logger.info(f"[WORKER] Referencia decrementada para upload: {job_data['upload_id']}")
             else:
                 # Legacy: si no tiene upload_id, eliminar archivo manualmente
                 if os.path.exists(input_file):
@@ -170,7 +166,6 @@ class Worker:
             
         except subprocess.CalledProcessError as e:
             # Capturar error específico de FFmpeg
-            # IMPORTANTE: Decodificar bytes si es necesario
             stderr_content = e.stderr
             if isinstance(stderr_content, bytes):
                 try:
@@ -180,7 +175,7 @@ class Worker:
             
             error_output = stderr_content if stderr_content else str(e)
             
-            # Guardar los ÚLTIMOS 2000 caracteres (donde suele estar el error real, después del banner)
+            
             if len(error_output) > 2000:
                 error_output = "..." + error_output[-2000:]
                 
@@ -188,7 +183,7 @@ class Worker:
             
             logger.error("=" * 80)
             logger.error(f"[WORKER] Error de FFmpeg en job {job_id}:")
-            logger.error(error_msg[-300:]) # Loguear solo el final en consola
+            logger.error(error_msg[-300:])
             logger.error("=" * 80)
             
             self.queue.update_job_status(
@@ -197,7 +192,6 @@ class Worker:
                 error=error_msg
             )
             
-            # Decrementar referencia del upload
             if job_data and job_data.get("upload_id"):
                 from .upload_svc import UploadService
                 upload_service = UploadService()
@@ -214,7 +208,6 @@ class Worker:
                 error=str(e)
             )
             
-            # Decrementar referencia del upload (solo tracking, NO elimina)
             if job_data and job_data.get("upload_id"):
                 from .upload_svc import UploadService
                 upload_service = UploadService()

@@ -7,20 +7,22 @@ import time
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from .upload_svc import UploadService
 
 logger = logging.getLogger(__name__)
 
 RESULTS_DIR = "/disk/results"
 UPLOADS_DIR = "/disk/uploads"  # NUEVO
-TTL_HOURS = 3  # Tiempo de vida de archivos procesados
+TTL_HOURS = 6  # Tiempo de vida de archivos procesados
 
 
 def cleanup_old_uploads(ttl_hours: int = TTL_HOURS) -> dict:
     """
-    Elimina archivos en /disk/uploads con más de 3 horas de antigüedad.
+    Elimina archivos en /disk/uploads con más de 6 horas de antigüedad.
+    También sincroniza con Valkey para eliminar registros huérfanos.
     
     Args:
-        ttl_hours: Tiempo de vida en horas (default: 3)
+        ttl_hours: Tiempo de vida en horas (default: 6)
         
     Returns:
         Diccionario con estadísticas de limpieza
@@ -40,6 +42,14 @@ def cleanup_old_uploads(ttl_hours: int = TTL_HOURS) -> dict:
     files_deleted = 0
     space_freed = 0
     errors = 0
+    valkey_synced = 0
+    
+    # Inicializar servicio de uploads para sincronizar con Valkey
+    try:
+        upload_svc = UploadService()
+    except Exception as e:
+        logger.error(f"[CLEANUP_UPLOADS] No se pudo conectar a Valkey: {str(e)}")
+        upload_svc = None
     
     logger.info("=" * 80)
     logger.info(f"[CLEANUP_UPLOADS] Iniciando limpieza de uploads antiguos")
@@ -68,6 +78,19 @@ def cleanup_old_uploads(ttl_hours: int = TTL_HOURS) -> dict:
                         f"(antigüedad: {file_age_hours:.1f}h, tamaño: {file_size / (1024 * 1024):.2f}MB)"
                     )
                     
+                    # Intentar extraer upload_id del nombre del archivo
+                    # Formato esperado: {upload_id}_{filename}
+                    if upload_svc and "_" in filename:
+                        upload_id = filename.split("_")[0]
+                        # Validar que parece un UUID (36 caracteres)
+                        if len(upload_id) == 36:
+                            try:
+                                upload_svc.delete_upload_from_cleanup(upload_id)
+                                valkey_synced += 1
+                                logger.info(f"[CLEANUP_UPLOADS] Registro eliminado de Valkey: {upload_id}")
+                            except Exception as e:
+                                logger.warning(f"[CLEANUP_UPLOADS] Error al eliminar de Valkey {upload_id}: {str(e)}")
+                    
                     os.remove(filepath)
                     files_deleted += 1
                     space_freed += file_size
@@ -85,6 +108,7 @@ def cleanup_old_uploads(ttl_hours: int = TTL_HOURS) -> dict:
     logger.info("=" * 80)
     logger.info(f"[CLEANUP_UPLOADS] Limpieza completada")
     logger.info(f"[CLEANUP_UPLOADS] Archivos eliminados: {files_deleted}")
+    logger.info(f"[CLEANUP_UPLOADS] Registros sincronizados con Valkey: {valkey_synced}")
     logger.info(f"[CLEANUP_UPLOADS] Espacio liberado: {space_freed_mb:.2f} MB")
     logger.info(f"[CLEANUP_UPLOADS] Errores: {errors}")
     logger.info("=" * 80)
@@ -92,6 +116,7 @@ def cleanup_old_uploads(ttl_hours: int = TTL_HOURS) -> dict:
     return {
         "files_deleted": files_deleted,
         "space_freed_mb": round(space_freed_mb, 2),
+        "valkey_synced": valkey_synced,
         "errors": errors
     }
 
