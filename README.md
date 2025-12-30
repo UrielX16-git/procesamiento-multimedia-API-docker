@@ -4,6 +4,8 @@ API REST modular y escalable para procesamiento de archivos multimedia usando **
 
 ## 🎯 Características
 
+**Versión**: 1.1.0 | [Docker Hub](https://hub.docker.com/r/urielx16/multimedia-api)
+
 - ✅ **Extraer metadatos** de videos (formato, duración, codecs, etc.)
 - ✅ **Extraer audio** de videos y convertir a MP3
 - ✅ **Comprimir videos** reduciendo tamaño sin perder mucha calidad
@@ -39,6 +41,18 @@ procesamiento-multimedia-API-docker/
 
 ### Instalación y Ejecución
 
+**Opción 1: Usar imágenes de Docker Hub (Recomendado)**
+
+```bash
+# Descargar docker-compose.yml
+wget https://raw.githubusercontent.com/UrielX16-git/procesamiento-multimedia-API-docker/main/docker-compose.yml
+
+# Ejecutar
+docker-compose up -d
+```
+
+**Opción 2: Construir localmente**
+
 ```bash
 # Clonar el repositorio
 git clone https://github.com/UrielX16-git/procesamiento-multimedia-API-docker.git
@@ -52,9 +66,9 @@ La API estará disponible en `http://localhost:8000`
 
 ## 📚 Documentación
 
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-- **Health Check**: http://localhost:8000/health
+- **Swagger UI**: <http://localhost:8000/docs>
+- **ReDoc**: <http://localhost:8000/redoc>
+- **Health Check**: <http://localhost:8000/health>
 
 ## 🧪 Uso de la API
 
