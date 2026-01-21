@@ -129,7 +129,7 @@ def compress_video(input_path: str, output_path: str, crf: int = 28, fps: int = 
     else:
         logger.info(f"[COMPRESS_VIDEO] Usando {max_threads} hilos especificados manualmente")
     
-    logger.info(f"[COMPRESS_VIDEO] Iniciando compresion con CRF={crf}, FPS={fps}, Audio={audio_bitrate}")
+    logger.info(f"[COMPRESS_VIDEO] Iniciando compresion con CRF={crf}, FPS={fps}, Audio=Copy (Original)")
     logger.info(f"[COMPRESS_VIDEO] Archivo entrada: {input_path}")
     logger.info(f"[COMPRESS_VIDEO] Archivo salida: {output_path}")
     
@@ -141,8 +141,7 @@ def compress_video(input_path: str, output_path: str, crf: int = 28, fps: int = 
         "-r", str(fps),
         "-preset", "veryfast",
         "-threads", str(max_threads),
-        "-acodec", "aac",
-        "-b:a", audio_bitrate,
+        "-c:a", "copy",
         "-y",
         output_path
     ]
