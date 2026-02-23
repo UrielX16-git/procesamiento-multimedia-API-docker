@@ -64,7 +64,7 @@ def extract_audio_from_video(input_path: str, output_path: str, quality: int = 2
     logger.info(f"[EXTRACT_AUDIO] Iniciando extraccion de audio de video")
     logger.info(f"[EXTRACT_AUDIO] Archivo entrada: {input_path}")
     logger.info(f"[EXTRACT_AUDIO] Archivo salida: {output_path}")
-    logger.info(f"[EXTRACT_AUDIO] Modo: {'PRESERVAR CALIDAD' if preserve_quality else 'COMPRIMIDO (96kbps)'}")
+    logger.info(f"[EXTRACT_AUDIO] Modo: {'PRESERVAR CALIDAD' if preserve_quality else 'COMPRIMIDO (32kbps mono)'}")
     
     if preserve_quality:
         # === MODO CALIDAD: lógica inteligente original ===
@@ -111,14 +111,15 @@ def extract_audio_from_video(input_path: str, output_path: str, quality: int = 2
             output_path
         ]
     else:
-        # === MODO COMPRIMIDO (por defecto): bitrate reducido para ~50% del tamaño ===
-        logger.info(f"[EXTRACT_AUDIO] Re-codificando audio a MP3 comprimido (96kbps)")
+        # === MODO COMPRIMIDO (por defecto): bitrate bajo + mono para tamaño mínimo ===
+        logger.info(f"[EXTRACT_AUDIO] Re-codificando audio a MP3 comprimido (32kbps mono)")
         cmd = [
             "ffmpeg",
             "-i", input_path,
             "-vn",
             "-acodec", "libmp3lame",
-            "-b:a", "96k",
+            "-b:a", "32k",
+            "-ac", "1",  # Mono para reducir tamaño
             "-y",
             output_path
         ]
