@@ -44,70 +44,88 @@ def get_video_metadata(input_path: str) -> Dict[str, Any]:
     return metadata
 
 
-def extract_audio_from_video(input_path: str, output_path: str, quality: int = 2) -> None:
+def extract_audio_from_video(input_path: str, output_path: str, quality: int = 2, preserve_quality: bool = False) -> None:
     """
-    Extrae el audio de un video y lo convierte a MP3 de forma ULTRA-OPTIMIZADA.
+    Extrae el audio de un video y lo convierte a MP3.
     
-    Estrategia inteligente:
-    1. Si el audio ya es MP3: Copia directa (INSTANTÁNEO - segundos)
-    2. Si no: Re-codifica a MP3 (normal - minutos)
+    Comportamiento por defecto (preserve_quality=False):
+        Re-codifica a MP3 con bitrate reducido (96kbps) para reducir tamaño (~50%).
+    
+    Modo preserve_quality=True:
+        1. Si el audio ya es MP3: Copia directa (INSTANTÁNEO - segundos)
+        2. Si no: Re-codifica a MP3 con alta calidad VBR
     
     Args:
         input_path: Ruta al archivo de video
         output_path: Ruta donde guardar el audio MP3
-        quality: Calidad del MP3 (0-9, donde 0 es mejor calidad)
+        quality: Calidad del MP3 (0-9, donde 0 es mejor calidad) - solo aplica con preserve_quality=True
+        preserve_quality: Si True, preserva la calidad original del audio
     """
-    logger.info(f"[EXTRACT_AUDIO] Iniciando extraccion de audio de video (OPTIMIZADO)")
+    logger.info(f"[EXTRACT_AUDIO] Iniciando extraccion de audio de video")
     logger.info(f"[EXTRACT_AUDIO] Archivo entrada: {input_path}")
     logger.info(f"[EXTRACT_AUDIO] Archivo salida: {output_path}")
+    logger.info(f"[EXTRACT_AUDIO] Modo: {'PRESERVAR CALIDAD' if preserve_quality else 'COMPRIMIDO (96kbps)'}")
     
-    # Primero detectar el codec de audio
-    try:
-        probe_cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-select_streams", "a:0",
-            "-show_entries", "stream=codec_name",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            input_path
-        ]
-        result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
-        audio_codec = result.stdout.strip()
-        logger.info(f"[EXTRACT_AUDIO] Codec de audio detectado: {audio_codec}")
-        
-        # Si ya es MP3, usar stream copy (SUPER RAPIDO)
-        if audio_codec == "mp3":
-            logger.info(f"[EXTRACT_AUDIO] Audio ya es MP3 - usando stream copy (INSTANTANEO)")
-            cmd = [
-                "ffmpeg",
-                "-i", input_path,
-                "-vn",  # Sin video
-                "-acodec", "copy",  # Copiar audio sin re-codificar
-                "-y",
-                output_path
+    if preserve_quality:
+        # === MODO CALIDAD: lógica inteligente original ===
+        try:
+            probe_cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path
             ]
-            subprocess.run(cmd, check=True, capture_output=True)
-            logger.info(f"[EXTRACT_AUDIO] Audio extraido exitosamente via stream copy")
-            return
-    
-    except Exception as e:
-        logger.warning(f"[EXTRACT_AUDIO] No se pudo detectar codec, usando re-codificacion: {str(e)}")
-    
-    # Fallback: Re-codificar a MP3
-    logger.info(f"[EXTRACT_AUDIO] Re-codificando audio a MP3 (calidad: {quality})")
-    cmd = [
-        "ffmpeg",
-        "-i", input_path,
-        "-vn",  # Sin video
-        "-acodec", "libmp3lame",
-        "-q:a", str(quality),
-        "-y",
-        output_path
-    ]
+            result = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+            audio_codec = result.stdout.strip()
+            logger.info(f"[EXTRACT_AUDIO] Codec de audio detectado: {audio_codec}")
+            
+            # Si ya es MP3, usar stream copy (SUPER RAPIDO)
+            if audio_codec == "mp3":
+                logger.info(f"[EXTRACT_AUDIO] Audio ya es MP3 - usando stream copy (INSTANTANEO)")
+                cmd = [
+                    "ffmpeg",
+                    "-i", input_path,
+                    "-vn",  # Sin video
+                    "-acodec", "copy",  # Copiar audio sin re-codificar
+                    "-y",
+                    output_path
+                ]
+                subprocess.run(cmd, check=True, capture_output=True)
+                logger.info(f"[EXTRACT_AUDIO] Audio extraido exitosamente via stream copy")
+                return
+        
+        except Exception as e:
+            logger.warning(f"[EXTRACT_AUDIO] No se pudo detectar codec, usando re-codificacion: {str(e)}")
+        
+        # Re-codificar a MP3 con alta calidad VBR
+        logger.info(f"[EXTRACT_AUDIO] Re-codificando audio a MP3 alta calidad (q:a {quality})")
+        cmd = [
+            "ffmpeg",
+            "-i", input_path,
+            "-vn",
+            "-acodec", "libmp3lame",
+            "-q:a", str(quality),
+            "-y",
+            output_path
+        ]
+    else:
+        # === MODO COMPRIMIDO (por defecto): bitrate reducido para ~50% del tamaño ===
+        logger.info(f"[EXTRACT_AUDIO] Re-codificando audio a MP3 comprimido (96kbps)")
+        cmd = [
+            "ffmpeg",
+            "-i", input_path,
+            "-vn",
+            "-acodec", "libmp3lame",
+            "-b:a", "96k",
+            "-y",
+            output_path
+        ]
     
     logger.info(f"[EXTRACT_AUDIO] Ejecutando FFmpeg...")
     subprocess.run(cmd, check=True, capture_output=True)
-    logger.info(f"[EXTRACT_AUDIO] Audio extraido exitosamente via re-codificacion")
+    logger.info(f"[EXTRACT_AUDIO] Audio extraido exitosamente")
 
 
 def compress_video(input_path: str, output_path: str, crf: int = 28, fps: int = 30, audio_bitrate: str = "128k", max_threads: int = 4) -> None:

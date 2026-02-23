@@ -95,7 +95,8 @@ class Worker:
                 ffmpeg_svc.extract_audio_from_video(
                     input_file, 
                     output_file,
-                    quality=params.get("quality", 2)
+                    quality=params.get("quality", 2),
+                    preserve_quality=params.get("preserve_quality", False)
                 )
             
             elif job_type == "cut_audio":

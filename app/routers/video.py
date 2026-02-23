@@ -89,15 +89,19 @@ async def video_details(
 
 @router.post("/extraer-audio")
 async def extract_audio(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    preserve_quality: bool = Form(False)
 ):
     """
     Extrae el audio de un video y lo convierte a MP3 de forma ASÍNCRONA.
     
+    Por defecto comprime el audio a ~96kbps (~50% del tamaño normal).
+    Enviar preserve_quality=true para mantener la calidad original.
+    
     Returns:
         JSON con job_id para consultar estado y descargar audio MP3
     """
-    logger.info(f"[ENDPOINT] POST /video/extraer-audio - Archivo: {file.filename}")
+    logger.info(f"[ENDPOINT] POST /video/extraer-audio - Archivo: {file.filename} - Preservar calidad: {preserve_quality}")
     
     # Guardar archivo y calcular tamaño
     file_size_mb = 0
@@ -117,7 +121,7 @@ async def extract_audio(
         input_file=upload_path,
         original_filename=file.filename,
         file_size_mb=file_size_mb,
-        parameters={"quality": 2},
+        parameters={"quality": 2, "preserve_quality": preserve_quality},
         priority=QueueService.PRIORITY_NORMAL  # Prioridad NORMAL
     )
     
@@ -131,6 +135,7 @@ async def extract_audio(
         "download_url": f"/jobs/download/{job_id}",
         "file_size_mb": round(file_size_mb, 2),
         "priority": "normal",
+        "preserve_quality": preserve_quality,
         "estimated_time": "10-60 segundos una vez iniciado el procesamiento"
     })
 
