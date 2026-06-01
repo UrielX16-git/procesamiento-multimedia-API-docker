@@ -77,6 +77,9 @@ class Worker:
             # Ejecutar operación correspondiente
             logger.info(f"[WORKER] Ejecutando operación: {job_type}")
             
+            # Variable para almacenar datos adicionales del resultado
+            result_data = None
+            
             if job_type == "compress_video":
                 ffmpeg_svc.compress_video(
                     input_file, 
@@ -108,10 +111,18 @@ class Worker:
                 )
             
             elif job_type == "concat_audios":
-                ffmpeg_svc.concat_audios(
+                fragments = ffmpeg_svc.concat_audios(
                     input_paths=params.get("input_files", [input_file]),
                     output_path=output_file
                 )
+                result_data = {"fragments": fragments}
+            
+            elif job_type == "concat_videos":
+                fragments = ffmpeg_svc.concat_videos(
+                    input_paths=params.get("input_files", [input_file]),
+                    output_path=output_file
+                )
+                result_data = {"fragments": fragments}
             
             elif job_type == "capture_frame":
                 ffmpeg_svc.capture_frame(
@@ -145,7 +156,8 @@ class Worker:
                 job_id, 
                 "completed", 
                 progress=100,
-                output_file=output_file
+                output_file=output_file,
+                result_data=result_data
             )
             
             if job_data.get("upload_id"):
@@ -238,6 +250,7 @@ class Worker:
         extensions = {
             "compress_video": "mp4",
             "convert_mp4": "mp4",
+            "concat_videos": "mp4",
             "extract_audio": "mp3",
             "cut_audio": "mp3",
             "concat_audios": "mp3",

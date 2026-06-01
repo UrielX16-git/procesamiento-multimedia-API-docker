@@ -13,6 +13,90 @@ from typing import List, Dict, Any
 logger = logging.getLogger(__name__)
 
 
+def _get_file_duration(file_path: str) -> float:
+    """
+    Obtiene la duración de un archivo multimedia en segundos usando ffprobe.
+    
+    Args:
+        file_path: Ruta al archivo
+        
+    Returns:
+        Duración en segundos
+    """
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return float(result.stdout.strip())
+
+
+def _format_timestamp(seconds: float) -> str:
+    """
+    Formatea segundos a timestamp HH:MM:SS.mmm.
+    
+    Args:
+        seconds: Tiempo en segundos
+        
+    Returns:
+        Timestamp formateado
+    """
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+
+
+def _build_fragments(input_paths: List[str], label: str) -> List[Dict[str, Any]]:
+    """
+    Construye la lista de fragmentos con timestamps calculados a partir
+    de la duración de cada archivo de entrada.
+    
+    Args:
+        input_paths: Lista de rutas a los archivos
+        label: Etiqueta para logs (ej: CONCAT_AUDIOS)
+        
+    Returns:
+        Lista de diccionarios con info de cada fragmento
+    """
+    fragments = []
+    current_time = 0.0
+    
+    for i, path in enumerate(input_paths, 1):
+        try:
+            duration = _get_file_duration(path)
+        except Exception as e:
+            logger.warning(f"[{label}] No se pudo obtener duracion del archivo {i}: {e}")
+            duration = 0.0
+        
+        # Extraer nombre original del archivo (quitar prefijo UUID_)
+        basename = os.path.basename(path)
+        parts = basename.split("_", 1)
+        original_name = parts[1] if len(parts) > 1 else basename
+        
+        fragments.append({
+            "index": i,
+            "filename": original_name,
+            "start": _format_timestamp(current_time),
+            "end": _format_timestamp(current_time + duration),
+            "duration_seconds": round(duration, 3)
+        })
+        
+        logger.info(
+            f"[{label}] Fragmento {i}: {original_name} | "
+            f"{_format_timestamp(current_time)} -> {_format_timestamp(current_time + duration)} "
+            f"({duration:.3f}s)"
+        )
+        
+        current_time += duration
+    
+    logger.info(f"[{label}] Duracion total estimada: {_format_timestamp(current_time)}")
+    return fragments
+
+
 def get_video_metadata(input_path: str) -> Dict[str, Any]:
     """
     Extrae metadatos de un archivo de video usando ffprobe de forma optimizada.
@@ -200,17 +284,23 @@ def cut_audio(input_path: str, output_path: str, start_time: str, end_time: str)
     logger.info(f"[CUT_AUDIO] Audio recortado exitosamente")
 
 
-def concat_audios(input_paths: List[str], output_path: str) -> None:
+def concat_audios(input_paths: List[str], output_path: str) -> List[Dict[str, Any]]:
     """
     Concatena múltiples archivos de audio en uno solo.
     
     Args:
         input_paths: Lista de rutas a los archivos de audio
         output_path: Ruta donde guardar el audio concatenado
+        
+    Returns:
+        Lista de fragmentos con timestamps de inicio/fin en el archivo resultante
     """
     logger.info(f"[CONCAT_AUDIOS] Iniciando concatenacion de audios")
     logger.info(f"[CONCAT_AUDIOS] Numero de archivos: {len(input_paths)}")
     logger.info(f"[CONCAT_AUDIOS] Archivo salida: {output_path}")
+    
+    # Calcular timestamps de cada fragmento antes de concatenar
+    fragments = _build_fragments(input_paths, "CONCAT_AUDIOS")
     
     list_file_path = output_path + ".list.txt"
     
@@ -218,7 +308,6 @@ def concat_audios(input_paths: List[str], output_path: str) -> None:
         logger.info(f"[CONCAT_AUDIOS] Creando archivo temporal de lista: {list_file_path}")
         with open(list_file_path, "w") as f:
             for i, path in enumerate(input_paths, 1):
-                logger.info(f"[CONCAT_AUDIOS] Archivo {i}/{len(input_paths)}: {path}")
                 f.write(f"file '{path}'\n")
         
         cmd = [
@@ -239,6 +328,60 @@ def concat_audios(input_paths: List[str], output_path: str) -> None:
         if os.path.exists(list_file_path):
             logger.info(f"[CONCAT_AUDIOS] Limpiando archivo temporal de lista")
             os.remove(list_file_path)
+    
+    return fragments
+
+
+def concat_videos(input_paths: List[str], output_path: str) -> List[Dict[str, Any]]:
+    """
+    Concatena múltiples archivos de video en uno solo.
+    
+    Utiliza el demuxer concat de FFmpeg con stream copy (sin re-codificación).
+    Para mejores resultados, los archivos deben tener el mismo codec, resolución y FPS.
+    
+    Args:
+        input_paths: Lista de rutas a los archivos de video
+        output_path: Ruta donde guardar el video concatenado
+        
+    Returns:
+        Lista de fragmentos con timestamps de inicio/fin en el archivo resultante
+    """
+    logger.info(f"[CONCAT_VIDEOS] Iniciando concatenacion de videos")
+    logger.info(f"[CONCAT_VIDEOS] Numero de archivos: {len(input_paths)}")
+    logger.info(f"[CONCAT_VIDEOS] Archivo salida: {output_path}")
+    
+    # Calcular timestamps de cada fragmento antes de concatenar
+    fragments = _build_fragments(input_paths, "CONCAT_VIDEOS")
+    
+    list_file_path = output_path + ".list.txt"
+    
+    try:
+        logger.info(f"[CONCAT_VIDEOS] Creando archivo temporal de lista: {list_file_path}")
+        with open(list_file_path, "w") as f:
+            for i, path in enumerate(input_paths, 1):
+                f.write(f"file '{path}'\n")
+        
+        cmd = [
+            "ffmpeg",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", list_file_path,
+            "-c", "copy",
+            "-movflags", "+faststart",  # Optimizar para streaming web
+            "-y",
+            output_path
+        ]
+        
+        logger.info(f"[CONCAT_VIDEOS] Ejecutando FFmpeg...")
+        subprocess.run(cmd, check=True, capture_output=True)
+        logger.info(f"[CONCAT_VIDEOS] Videos concatenados exitosamente")
+    
+    finally:
+        if os.path.exists(list_file_path):
+            logger.info(f"[CONCAT_VIDEOS] Limpiando archivo temporal de lista")
+            os.remove(list_file_path)
+    
+    return fragments
 
 
 def capture_frame(input_path: str, output_path: str, timestamp: str, quality: int = 85) -> None:

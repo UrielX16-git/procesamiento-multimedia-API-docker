@@ -34,7 +34,8 @@ async def create_job_from_upload(
     - compress_video: Comprimir video (params: max_threads)
     - convert_mp4: Convertir a MP4 (params: max_threads)
     - cut_audio: Recortar audio (params: start_time, end_time)
-    - concat_audios: Unir audios (params: upload_ids como lista)
+    - concat_audios: Unir audios (params: upload_ids como lista de IDs de uploads)
+    - concat_videos: Unir videos (params: upload_ids como lista de IDs de uploads)
     - capture_frame: Capturar frame (params: timestamp, quality)
     
     Args:
@@ -65,6 +66,7 @@ async def create_job_from_upload(
         "extract_audio": QueueService.PRIORITY_NORMAL,
         "cut_audio": QueueService.PRIORITY_NORMAL,
         "concat_audios": QueueService.PRIORITY_NORMAL,
+        "concat_videos": QueueService.PRIORITY_NORMAL,
         "compress_video": QueueService.PRIORITY_LOW,
         "convert_mp4": QueueService.PRIORITY_LOW
     }
@@ -76,6 +78,28 @@ async def create_job_from_upload(
         )
     
     priority = priority_map[job_type]
+    
+    # --- Resolver upload_ids a rutas reales (para concat_audios / concat_videos) ---
+    if "upload_ids" in params:
+        upload_ids_list = params["upload_ids"]
+        if not isinstance(upload_ids_list, list) or len(upload_ids_list) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail="upload_ids debe ser una lista con al menos 2 IDs de uploads"
+            )
+        
+        input_files = []
+        for uid in upload_ids_list:
+            u_data = upload_svc.get_upload(uid)
+            if not u_data:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Upload no encontrado o expirado: {uid}"
+                )
+            input_files.append(u_data["file_path"])
+        
+        params["input_files"] = input_files
+        logger.info(f"[ENDPOINT] Resueltos {len(input_files)} upload_ids a rutas de archivos")
     
     # Crear job
     job_id = queue.create_job(
@@ -168,7 +192,7 @@ async def download_result(job_id: str):
     if job_data["status"] != "completed":
         raise HTTPException(
             status_code=400, 
-            content={
+            detail={
                 "error": f"Job no completado. Estado actual: {job_data['status']}",
                 "status": job_data["status"],
                 "progress": job_data.get("progress", 0)

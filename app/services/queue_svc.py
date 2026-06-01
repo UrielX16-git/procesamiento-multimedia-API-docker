@@ -153,7 +153,8 @@ class QueueService:
         status: str,
         progress: Optional[int] = None,
         output_file: Optional[str] = None,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        result_data: Optional[Dict[str, Any]] = None
     ):
         """
         Actualiza el estado de un job.
@@ -164,6 +165,7 @@ class QueueService:
             progress: Progreso 0-100
             output_file: Ruta del archivo de salida (si completó)
             error: Mensaje de error (si falló)
+            result_data: Datos adicionales del resultado (ej: fragmentos de concatenación)
         """
         job_data = self.get_job_status(job_id)
         if not job_data:
@@ -190,6 +192,8 @@ class QueueService:
             if status == "completed":
                 job_data["output_file"] = output_file
                 job_data["result_url"] = f"/jobs/download/{job_id}"
+                if result_data:
+                    job_data["result_data"] = result_data
                 # TTL de 3 horas para jobs completados
                 self.redis.zadd("completed_jobs", {job_id: datetime.utcnow().timestamp()})
                 self.redis.expire(f"job:{job_id}", 10800)  # 3 horas
